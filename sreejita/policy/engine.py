@@ -8,7 +8,7 @@ class PolicyEngine:
     GUARANTEES:
     - Ambiguity is not blocked
     - Weak confidence produces warnings, not hard stops
-    - No fabricated actions
+    - Explicitly unknown domains are blocked (legacy contract)
     - Deterministic, explainable outcomes
     """
 
@@ -18,6 +18,16 @@ class PolicyEngine:
     def evaluate(self, decision):
         reasons = []
         status = "allowed"
+
+        # -----------------------------------------
+        # Rule 0: Explicitly unknown domain → BLOCK
+        # (legacy / test contract)
+        # -----------------------------------------
+        if getattr(decision, "selected_domain", None) == "unknown":
+            return PolicyDecision(
+                status="blocked",
+                reasons=["Domain explicitly marked as unknown"],
+            )
 
         # -----------------------------------------
         # Rule 1: Insufficient data → allow but warn
