@@ -26,6 +26,7 @@ RULE_WEIGHT = 0.75
 # Intent normalization guard
 INTENT_SCORE_MAX = 20.0
 
+AMBIGUITY_DELTA = 0.10   # STEP 2.4 — conflict damping
 
 # -------------------------------------------------
 # DOMAIN SCORING ENGINE (AUTHORITATIVE)
@@ -121,25 +122,62 @@ def compute_domain_scores(df, rule_based_results):
 
 def select_best_domain(domain_scores):
     """
-    Select the highest-confidence domain.
+    Select the highest-confidence domain with conflict damping.
 
     GUARANTEES:
     - Never forces a domain
+    - Explicit ambiguity handling
     - UNKNOWN preferred over false positives
     """
 
     if not domain_scores:
-        return "unknown", 0.0, {}
+        return "unknown", 0.0, {
+            "reason": "no_domain_scores"
+        }
 
-    domain, meta = max(
+    # -------------------------------------------------
+    # ORDER DOMAINS BY CONFIDENCE
+    # -------------------------------------------------
+    ordered = sorted(
         domain_scores.items(),
         key=lambda x: x[1].get("confidence", 0.0),
+        reverse=True,
     )
 
-    confidence = meta.get("confidence", 0.0)
+    top_domain, top_meta = ordered[0]
+    top_conf = float(top_meta.get("confidence", 0.0))
 
     # 🚫 HARD FLOOR
-    if confidence < MIN_CONFIDENCE_FLOOR:
-        return "unknown", confidence, meta
+    if top_conf < MIN_CONFIDENCE_FLOOR:
+        return "unknown", top_conf, {
+            **top_meta,
+            "reason": "below_confidence_floor",
+        }
 
-    return domain, confidence, meta
+    # -------------------------------------------------
+    # AMBIGUITY CHECK (STEP 2.4)
+    # -------------------------------------------------
+    if len(ordered) > 1:
+        second_domain, second_meta = ordered[1]
+        second_conf = float(second_meta.get("confidence", 0.0))
+
+        if abs(top_conf - second_conf) <= AMBIGUITY_DELTA:
+            return "unknown", top_conf, {
+                "reason": "ambiguous_top_domains",
+                "top_candidates": [
+                    {
+                        "domain": top_domain,
+                        "confidence": round(top_conf, 3),
+                    },
+                    {
+                        "domain": second_domain,
+                        "confidence": round(second_conf, 3),
+                    },
+                ],
+            }
+
+    # -------------------------------------------------
+    # CLEAR WINNER
+    # -------------------------------------------------
+    return top_domain, top_conf, top_meta
+
