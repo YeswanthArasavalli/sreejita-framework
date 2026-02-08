@@ -134,7 +134,7 @@ def generate_report_payload(
     shape_info = detect_dataset_shape(df)
 
     # -------------------------------------------------
-    # 3. DOMAIN DETECTION (ROUTER v2)
+    # 3. DOMAIN DETECTION (AUTHORITATIVE)
     # -------------------------------------------------
     detection = detect_domain(
         df,
@@ -143,10 +143,10 @@ def generate_report_payload(
     )
 
     # =================================================
-    # 🚨 NO DOMAIN — SUPPRESSED REPORT (NOT ERROR)
+    # 🚨 NO DOMAIN — SUPPRESSED REPORT
     # =================================================
     if not detection or not detection.domain:
-        log.warning("No confident domain detected — generating suppressed report")
+        log.warning("No confident domain detected — suppressed report")
 
         return {
             "unknown": {
@@ -179,11 +179,11 @@ def generate_report_payload(
     confidence = float(detection.confidence or 0.0)
 
     # =================================================
-    # 🚨 LOW CONFIDENCE — SUPPRESSED EXECUTION
+    # 🚨 LOW CONFIDENCE — EXECUTION SUPPRESSED
     # =================================================
     if confidence < MIN_DOMAIN_CONFIDENCE:
         log.warning(
-            f"Domain confidence too low for execution "
+            f"Low domain confidence — execution skipped "
             f"(domain={domain}, confidence={confidence})"
         )
 
