@@ -19,7 +19,7 @@ from sreejita.domains.contracts import DomainDetectionResult
 
 
 # =====================================================
-# GOVERNANCE CONSTANTS
+# GOVERNANCE CONSTANTS (LOCKED)
 # =====================================================
 
 MIN_CONFIDENCE_ACCEPT = 0.40     # authoritative acceptance gate
@@ -78,7 +78,7 @@ def detect_domain(
             hint_signal = {"invalid_user_hint": hint}
 
     # -------------------------------------------------
-    # STEP 2: DETECTOR-BASED RESOLUTION
+    # STEP 2: DETECTOR-BASED RESOLUTION (AUTHORITATIVE)
     # -------------------------------------------------
     best: Optional[DomainDetectionResult] = None
 
@@ -93,10 +93,14 @@ def detect_domain(
             if not isinstance(result, DomainDetectionResult):
                 continue
 
-            # Router owns engine lifecycle — strip defensively
+            # Router owns execution lifecycle — strip engine defensively
             result.engine = None
 
-            if best is None or result.confidence > best.confidence:
+            if (
+                best is None
+                or float(result.confidence or 0.0)
+                > float(best.confidence or 0.0)
+            ):
                 best = result
 
         except Exception:
@@ -110,7 +114,7 @@ def detect_domain(
         best
         and isinstance(best.domain, str)
         and best.domain
-        and best.confidence >= MIN_CONFIDENCE_ACCEPT
+        and float(best.confidence) >= MIN_CONFIDENCE_ACCEPT
     ):
         return best
 
@@ -118,11 +122,11 @@ def detect_domain(
         # Strict mode → explicit rejection
         return DomainDetectionResult(
             domain=None,
-            confidence=best.confidence if best else 0.0,
+            confidence=float(best.confidence) if best else 0.0,
             signals={
                 "reason": "strict_mode_reject",
                 "best_candidate": best.domain if best else None,
-                "best_confidence": best.confidence if best else 0.0,
+                "best_confidence": float(best.confidence) if best else 0.0,
                 **hint_signal,
             },
         )
@@ -132,11 +136,13 @@ def detect_domain(
     # -------------------------------------------------
     return DomainDetectionResult(
         domain=None,
-        confidence=best.confidence if best else FALLBACK_CONFIDENCE,
+        confidence=float(best.confidence)
+        if best
+        else FALLBACK_CONFIDENCE,
         signals={
             "reason": "no_confident_domain_detected",
             "best_candidate": best.domain if best else None,
-            "best_confidence": best.confidence if best else 0.0,
+            "best_confidence": float(best.confidence) if best else 0.0,
             **hint_signal,
         },
     )
@@ -154,6 +160,7 @@ def apply_domain(
     """
     Applies domain preprocessing ONLY if detection is confident.
 
+    GUARANTEES:
     - NEVER forces a domain
     - NEVER raises
     - NEVER mutates original df
@@ -164,7 +171,7 @@ def apply_domain(
     if (
         not result
         or not result.domain
-        or result.confidence < MIN_CONFIDENCE_ACCEPT
+        or float(result.confidence) < MIN_CONFIDENCE_ACCEPT
     ):
         return df
 
@@ -173,6 +180,7 @@ def apply_domain(
         return df
 
     try:
+        # Domain preprocess must be pure
         return domain.preprocess(df)
     except Exception:
         return df
