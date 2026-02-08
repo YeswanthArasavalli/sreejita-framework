@@ -19,8 +19,8 @@ class HybridReport(BaseReport):
     - Executive-safe Markdown
     - Deterministic ordering
     - No intelligence computation
-    - Graceful handling of UNKNOWN / AMBIGUOUS domains
-    - No empty or duplicated sections
+    - Explicit handling of UNKNOWN / AMBIGUOUS / SUPPRESSED domains
+    - No silent failures
     """
 
     name = "hybrid"
@@ -149,6 +149,32 @@ class HybridReport(BaseReport):
     def _write_domain_section(self, f, domain: str, result: Dict[str, Any]):
         f.write(f"## Domain Deep Dive — {domain.replace('_',' ').title()}\n\n")
 
+        status = result.get("status")
+        confidence = result.get("confidence")
+
+        # =================================================
+        # SUPPRESSED / AMBIGUOUS DOMAIN — EXPLICIT
+        # =================================================
+        if status in {
+            "ambiguous",
+            "insufficient_data",
+            "execution_failed",
+            "unavailable",
+        }:
+            f.write("### Analysis Status\n\n")
+            f.write(f"- **Status:** {status.replace('_',' ').title()}\n")
+            f.write(f"- **Confidence:** {confidence if confidence is not None else '—'}\n\n")
+
+            limitations = result.get("executive", {}).get("limitations")
+            if limitations:
+                f.write("**Why this analysis was limited:**\n")
+                for l in limitations:
+                    f.write(f"- {l}\n")
+                f.write("\n")
+
+            f.write("---\n\n")
+            return
+
         # ---------------- KPIs ----------------
         raw_kpis = result.get("kpis") or {}
         kpis = {
@@ -195,12 +221,11 @@ class HybridReport(BaseReport):
                 f.write(f"> {caption} (Confidence: {conf}%)\n\n")
         else:
             f.write(
-                "_No visual evidence generated due to data sparsity, ambiguity, or confidence thresholds._\n\n"
+                "_No visual evidence generated due to data sparsity or confidence thresholds._\n\n"
             )
 
         # ---------------- INSIGHTS ----------------
-        raw_insights = result.get("insights") or []
-        insights = [i for i in raw_insights if isinstance(i, dict)][:5]
+        insights = [i for i in (result.get("insights") or []) if isinstance(i, dict)][:5]
 
         f.write("### Key Insights\n")
 
@@ -213,7 +238,7 @@ class HybridReport(BaseReport):
             f.write("\n")
         else:
             f.write(
-                "_No insights generated. Data did not meet confidence or sufficiency thresholds._\n\n"
+                "_No insights generated due to limited evidence._\n\n"
             )
 
         # ---------------- RECOMMENDATIONS ----------------
@@ -277,20 +302,12 @@ class HybridReport(BaseReport):
             return f"{v:.2f}"
         return str(v)
 
+
 # =====================================================
-# PUBLIC ENTRY POINT (BACKWARD COMPATIBILITY — REQUIRED)
+# PUBLIC ENTRY POINT (BACKWARD COMPATIBILITY)
 # =====================================================
 
 def run(input_path: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Legacy-compatible entry point.
-
-    GUARANTEES:
-    - Preserves v1.x / v3.x public API
-    - Delegates orchestration correctly
-    - Never raises import-time errors
-    """
-
     from pathlib import Path
     from sreejita.reporting.orchestrator import generate_report_payload
 
