@@ -14,7 +14,7 @@ SUPPORTED_EXT = (".csv", ".xlsx")
 
 
 # =====================================================
-# PROCESS SINGLE FILE (BATCH SAFE)
+# PROCESS SINGLE FILE (BATCH SAFE, GOVERNED)
 # =====================================================
 
 @retry(times=3, delay=5)
@@ -24,12 +24,12 @@ def run_single_file(
     run_dir: Path,
 ) -> Dict[str, Any]:
     """
-    v3.5.1 Batch Contract (FINAL):
+    Stabilization-mode batch contract:
 
-    - Markdown is generated (internal)
-    - Payload is generated (for PDF)
-    - PDF is the FINAL artifact
-    - Batch must NEVER fail due to rendering
+    - Markdown may always be generated
+    - Executive PDF ONLY if domain is confidently detected
+    - Ambiguity never crashes batch
+    - No fabricated payloads
     """
 
     src = Path(file_path)
@@ -56,39 +56,67 @@ def run_single_file(
     local_config["run_dir"] = str(file_run_dir)
 
     # -------------------------------------------------
-    # 3️⃣ Generate Markdown + Payload (AUTHORITATIVE)
+    # 3️⃣ Generate Hybrid Output
     # -------------------------------------------------
     result = run_hybrid(str(dst), local_config)
 
-    md_path = Path(result["markdown"])
-    payload = result["payload"]
+    if not isinstance(result, dict):
+        raise RuntimeError("Hybrid returned invalid result")
+
+    md_path = Path(result.get("markdown", ""))
 
     if not md_path.exists():
         raise RuntimeError(f"Markdown not generated: {md_path}")
 
     log.info("Markdown generated: %s", md_path.name)
 
+    # -------------------------------------------------
+    # 4️⃣ Inspect domain decision (if present)
+    # -------------------------------------------------
+    decision = result.get("decision")
+    domain_status = getattr(decision, "status", None)
+    primary_domain = getattr(decision, "selected_domain", None)
+
     pdf_path = None
 
     # -------------------------------------------------
-    # 4️⃣ Generate Executive PDF (ReportLab)
+    # 5️⃣ Executive PDF (ONLY IF SAFE)
     # -------------------------------------------------
-    try:
-        from sreejita.reporting.pdf_renderer import ExecutivePDFRenderer
+    if domain_status == "detected" and primary_domain:
+        payload = result.get("payload")
 
-        pdf_renderer = ExecutivePDFRenderer()
-        pdf_path = file_run_dir / "Sreejita_Executive_Report.pdf"
+        if isinstance(payload, dict):
+            try:
+                from sreejita.reporting.pdf_renderer import (
+                    ExecutivePDFRenderer,
+                )
 
-        pdf_renderer.render(
-            payload=payload,
-            output_path=pdf_path,
+                pdf_renderer = ExecutivePDFRenderer()
+                pdf_path = file_run_dir / "Sreejita_Executive_Report.pdf"
+
+                pdf_renderer.render(
+                    payload=payload,
+                    output_path=pdf_path,
+                )
+
+                log.info("PDF generated: %s", pdf_path)
+
+            except Exception as e:
+                log.warning(
+                    "PDF generation failed (non-blocking): %s",
+                    e,
+                )
+        else:
+            log.warning(
+                "PDF skipped: payload missing or invalid for %s",
+                src.name,
+            )
+
+    else:
+        log.warning(
+            "PDF skipped due to ambiguous or insufficient domain: %s",
+            src.name,
         )
-
-        log.info("PDF generated: %s", pdf_path)
-
-    except Exception as e:
-        # ❗ ABSOLUTE RULE: batch must NEVER fail
-        log.warning("PDF generation failed (non-blocking): %s", e)
 
     log.info("Completed file: %s", src.name)
 
@@ -110,12 +138,13 @@ def run_batch(
     output_root: str = "runs",
 ):
     """
-    v3.5.1 Batch Runner (STABLE)
+    Stabilization-mode batch runner:
 
     - One timestamped run directory
     - One subfolder per file
     - Safe retries
     - Zero global failure risk
+    - Governance preserved at scale
     """
 
     config = load_config(config_path)
@@ -125,7 +154,8 @@ def run_batch(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     files = [
-        f for f in os.listdir(input_folder)
+        f
+        for f in os.listdir(input_folder)
         if f.lower().endswith(SUPPORTED_EXT)
     ]
 
