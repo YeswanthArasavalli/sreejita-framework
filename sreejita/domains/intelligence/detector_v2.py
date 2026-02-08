@@ -6,6 +6,12 @@
 from .column_normalizer import normalize_columns
 from .intent_scoring import score_domain_intent
 
+from sreejita.core.column_roles import (
+    infer_column_roles,
+    summarize_roles,
+    compute_generic_penalty,
+)
+
 # -------------------------------------------------
 # SAFETY CONSTANTS
 # -------------------------------------------------
@@ -32,12 +38,20 @@ def compute_domain_scores(df, rule_based_results):
     RULES:
     - Rule-based detection is authoritative
     - Intent can ONLY reinforce, never override
+    - Generic schemas are penalized conservatively
     - No new domains may be introduced by intent
     - Healthcare-safe by design
     """
 
     if not rule_based_results:
         return {}
+
+    # -----------------------------------------
+    # DOMAIN-AGNOSTIC SCHEMA ANALYSIS (STEP 2.3)
+    # -----------------------------------------
+    role_map = infer_column_roles(df)
+    role_summary = summarize_roles(role_map)
+    generic_penalty = compute_generic_penalty(role_summary)
 
     normalized_cols, _ = normalize_columns(df.columns)
     final_scores = {}
@@ -69,12 +83,17 @@ def compute_domain_scores(df, rule_based_results):
             intent_conf = 0.0
 
         # -------------------------------
-        # COMBINED CONFIDENCE
+        # COMBINED CONFIDENCE (RULE FIRST)
         # -------------------------------
         combined = (
             RULE_WEIGHT * rule_conf +
             INTENT_WEIGHT * intent_conf
         )
+
+        # -----------------------------------------
+        # GENERIC SCHEMA PENALTY (STEP 2.3)
+        # -----------------------------------------
+        combined = combined - generic_penalty
 
         combined = round(
             min(MAX_CONFIDENCE_CAP, max(combined, 0.0)),
@@ -88,6 +107,8 @@ def compute_domain_scores(df, rule_based_results):
             "signals": {
                 "rule_based": rb.get("signals", {}),
                 "intent_based": intent_signals or {},
+                "schema_roles": role_summary,
+                "generic_penalty": generic_penalty,
             },
         }
 
