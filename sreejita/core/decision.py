@@ -1,6 +1,6 @@
 # =====================================================
-# DECISION EXPLANATION — UNIVERSAL (FINAL, LOCKED)
-# Sreejita Framework v3.6 STABILIZED
+# DECISION EXPLANATION — UNIVERSAL (STABILIZATION MODE)
+# Sreejita Framework — Step 1.2
 # =====================================================
 
 from dataclasses import dataclass, field
@@ -14,26 +14,20 @@ class DecisionExplanation:
     """
     Canonical decision explanation object.
 
-    Used by:
-    - Domain Router
-    - Orchestrator
-    - Streamlit UI
-    - Observability / Audit
-    - Debugging
-
-    HARD GUARANTEES:
+    STABILIZATION GUARANTEES:
+    - Ambiguity is allowed
+    - No domain is forced
+    - Status explicitly declares certainty
     - Always serializable
-    - Never crashes on missing fields
-    - Engine is attached lazily & safely
-    - Confidence is bounded
     """
 
     # -------------------------------------------------
     # CORE DECISION
     # -------------------------------------------------
-    decision_type: str
-    selected_domain: str
-    confidence: float
+    decision_type: str = "domain_detection"
+    selected_domain: Optional[str] = None
+    confidence: float = 0.0
+    status: str = "insufficient_data"  # detected | ambiguous | insufficient_data
 
     # -------------------------------------------------
     # EXPLAINABILITY
@@ -94,30 +88,27 @@ class DecisionExplanation:
             self.domain_scores = None
 
         # -----------------------------
-        # Core field safety
+        # Core field safety (NO FORCING)
         # -----------------------------
         if not isinstance(self.decision_type, str):
             self.decision_type = "unknown_decision"
 
-        if not isinstance(self.selected_domain, str):
-            self.selected_domain = "generic"
+        if self.selected_domain is not None and not isinstance(self.selected_domain, str):
+            self.selected_domain = None
+
+        if self.status not in {"detected", "ambiguous", "insufficient_data"}:
+            self.status = "insufficient_data"
 
     # =================================================
     # SERIALIZATION (STREAMLIT / JSON SAFE)
     # =================================================
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Convert decision into a JSON-safe dictionary.
-
-        NOTE:
-        - `engine` is intentionally excluded
-        - All values are UI-safe
-        """
         return {
             "decision_id": self.decision_id,
             "decision_type": self.decision_type,
             "selected_domain": self.selected_domain,
             "confidence": self.confidence,
+            "status": self.status,
             "alternatives": self.alternatives,
             "signals": self.signals,
             "rules_applied": self.rules_applied,
@@ -130,9 +121,6 @@ class DecisionExplanation:
     # SAFE ENGINE ATTACHMENT
     # =================================================
     def attach_engine(self, engine: Any) -> None:
-        """
-        Attach domain execution engine safely.
-        """
         self.engine = engine
 
     # =================================================
@@ -142,7 +130,7 @@ class DecisionExplanation:
         return (
             f"[Decision {self.decision_id}] "
             f"{self.decision_type} → {self.selected_domain} "
-            f"(confidence={self.confidence:.2f})"
+            f"(confidence={self.confidence:.2f}, status={self.status})"
         )
 
     __repr__ = __str__
