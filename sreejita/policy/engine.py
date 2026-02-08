@@ -1,11 +1,17 @@
-from sreejita.core.policy import PolicyDecision
-from sreejita.policy.rules import (
-    check_min_confidence,
-    block_if_unknown_domain
-)
+from sreejita.core.decision import PolicyDecision
 
 
 class PolicyEngine:
+    """
+    Stabilization-mode policy engine.
+
+    GUARANTEES:
+    - Ambiguity is not blocked
+    - Weak confidence produces warnings, not hard stops
+    - No fabricated actions
+    - Deterministic, explainable outcomes
+    """
+
     def __init__(self, min_confidence: float = 0.6):
         self.min_confidence = min_confidence
 
@@ -13,23 +19,33 @@ class PolicyEngine:
         reasons = []
         status = "allowed"
 
-        # Rule 1: Unknown domain
-        result = block_if_unknown_domain(decision)
-        if result:
-            return PolicyDecision(
-                status="blocked",
-                reasons=[result["reason"]],
-                actions={}
-            )
-
-        # Rule 2: Confidence gate
-        result = check_min_confidence(decision, self.min_confidence)
-        if result:
+        # -----------------------------------------
+        # Rule 1: Insufficient data → allow but warn
+        # -----------------------------------------
+        if getattr(decision, "status", None) == "insufficient_data":
             status = "allowed_with_warning"
-            reasons.append(result["reason"])
+            reasons.append("Insufficient data to confidently classify domain")
+
+        # -----------------------------------------
+        # Rule 2: Ambiguous domain → allow but warn
+        # -----------------------------------------
+        if getattr(decision, "status", None) == "ambiguous":
+            status = "allowed_with_warning"
+            reasons.append("Domain classification is ambiguous")
+
+        # -----------------------------------------
+        # Rule 3: Low confidence → allow with warning
+        # -----------------------------------------
+        if (
+            decision.confidence is not None
+            and decision.confidence < self.min_confidence
+        ):
+            status = "allowed_with_warning"
+            reasons.append(
+                f"Domain confidence below minimum threshold ({self.min_confidence})"
+            )
 
         return PolicyDecision(
             status=status,
             reasons=reasons,
-            actions={}
         )
