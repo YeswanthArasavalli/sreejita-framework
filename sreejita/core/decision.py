@@ -1,6 +1,6 @@
 # =====================================================
-# DECISION EXPLANATION — UNIVERSAL (STABILIZATION MODE)
-# Sreejita Framework — Step 1.2
+# DECISION CONTRACTS — UNIVERSAL (STABILIZATION MODE)
+# Sreejita Framework
 # =====================================================
 
 from dataclasses import dataclass, field
@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 import uuid
 
+
+# =====================================================
+# DOMAIN / EXECUTION DECISION
+# =====================================================
 
 @dataclass
 class DecisionExplanation:
@@ -19,6 +23,7 @@ class DecisionExplanation:
     - No domain is forced
     - Status explicitly declares certainty
     - Always serializable
+    - Safe for UI, CLI, batch, and audit
     """
 
     # -------------------------------------------------
@@ -134,3 +139,23 @@ class DecisionExplanation:
         )
 
     __repr__ = __str__
+
+
+# =====================================================
+# POLICY DECISION (CANONICAL)
+# =====================================================
+
+@dataclass
+class PolicyDecision:
+    """
+    Canonical policy evaluation result.
+
+    GUARANTEES:
+    - Minimal and explicit
+    - Serializable
+    - No hidden actions or side effects
+    - Safe for UI, CLI, batch, and audit
+    """
+
+    status: str  # allowed | allowed_with_warning | blocked
+    reasons: List[str] = field(default_factory=list)
