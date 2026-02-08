@@ -250,6 +250,83 @@ class CustomerDomain(BaseDomain):
 
         return df
 
+     # -------------------------------------------------
+    # SAFE RUN WRAPPER (STABLE OUTPUT CONTRACT)
+    # -------------------------------------------------
+    def run(
+        self,
+        df: pd.DataFrame,
+        *,
+        visual_output_dir: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """
+        Execute the healthcare pipeline with stable, safe outputs.
+
+        Guarantees:
+        - Returns a fixed output schema even on weak data
+        - No exceptions escape the method
+        """
+
+        result: Dict[str, Any] = {
+            "domain": self.name,
+            "kpis": {},
+            "visuals": [],
+            "insights": [],
+            "recommendations": [],
+        }
+
+        try:
+            if not self.validate_data(df):
+                return result
+
+            df = df.copy(deep=False)
+            df = self.preprocess(df)
+            if df is None or df.empty:
+                return result
+
+            kpis = self.calculate_kpis(df) or {}
+            if not isinstance(kpis, dict):
+                kpis = {}
+
+            if kpis and "_confidence" not in kpis:
+                kpis["_confidence"] = {}
+
+            self._last_kpis = kpis
+
+            insights = self.generate_insights(df, kpis) or []
+            recommendations = self.generate_recommendations(
+                df, kpis, insights
+            ) or []
+
+            visuals: List[Dict[str, Any]] = []
+            if visual_output_dir is not None:
+                try:
+                    visuals = self.generate_visuals(df, visual_output_dir)
+                    visuals = self.ensure_minimum_visuals(
+                        visuals,
+                        df,
+                        visual_output_dir,
+                    )
+                except Exception:
+                    visuals = self.ensure_minimum_visuals(
+                        [],
+                        df,
+                        visual_output_dir,
+                    )
+
+            result.update(
+                {
+                    "kpis": kpis,
+                    "visuals": visuals,
+                    "insights": insights,
+                    "recommendations": recommendations,
+                }
+            )
+        except Exception:
+            return result
+
+        return result
+
     # ---------------- KPIs ----------------
 
     def calculate_kpis(self, df: pd.DataFrame) -> Dict[str, Any]:
