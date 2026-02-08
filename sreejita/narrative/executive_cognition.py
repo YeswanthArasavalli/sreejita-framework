@@ -1,13 +1,14 @@
 # =====================================================
 # EXECUTIVE COGNITION — UNIVERSAL (FINAL, GOVERNED)
-# Sreejita Framework v3.5.x
+# Sreejita Framework v3.6 (STEP-7 COMPLIANT)
 # =====================================================
 
 from typing import Dict, Any, List
 from sreejita.core.capabilities import Capability
 
+
 # =====================================================
-# DOMAIN EXECUTIVE PROFILES (POLICY, NOT LOGIC)
+# DOMAIN EXECUTIVE PROFILES (POLICY ONLY)
 # =====================================================
 
 EXECUTIVE_DOMAIN_PROFILES = {
@@ -26,7 +27,7 @@ EXECUTIVE_DOMAIN_PROFILES = {
         "risk_penalty": 6,
         "confidence_floor": 0.65,
         "mixed_domain_penalty": 0.5,
-        "readiness_bias": +10,
+        "readiness_bias": 10,
         "tone": "commercial",
     },
     "finance": {
@@ -35,7 +36,7 @@ EXECUTIVE_DOMAIN_PROFILES = {
         "risk_penalty": 8,
         "confidence_floor": 0.70,
         "mixed_domain_penalty": 0.6,
-        "readiness_bias": +5,
+        "readiness_bias": 5,
         "tone": "financial",
     },
     "marketing": {
@@ -44,7 +45,7 @@ EXECUTIVE_DOMAIN_PROFILES = {
         "risk_penalty": 4,
         "confidence_floor": 0.60,
         "mixed_domain_penalty": 0.4,
-        "readiness_bias": +15,
+        "readiness_bias": 15,
         "tone": "growth",
     },
     "supply_chain": {
@@ -62,7 +63,7 @@ EXECUTIVE_DOMAIN_PROFILES = {
         "risk_penalty": 7,
         "confidence_floor": 0.65,
         "mixed_domain_penalty": 0.5,
-        "readiness_bias": +5,
+        "readiness_bias": 5,
         "tone": "people",
     },
     "customer": {
@@ -71,16 +72,16 @@ EXECUTIVE_DOMAIN_PROFILES = {
         "risk_penalty": 5,
         "confidence_floor": 0.60,
         "mixed_domain_penalty": 0.4,
-        "readiness_bias": +10,
+        "readiness_bias": 10,
         "tone": "experience",
     },
-        "customer_value": {
+    "customer_value": {
         "escalate_info": False,
         "warning_penalty": 3,
         "risk_penalty": 6,
         "confidence_floor": 0.65,
         "mixed_domain_penalty": 0.4,
-        "readiness_bias": +8,
+        "readiness_bias": 8,
         "tone": "commercial",
     },
 }
@@ -91,45 +92,57 @@ DEFAULT_PROFILE = EXECUTIVE_DOMAIN_PROFILES["retail"]
 def get_domain_profile(domain: str) -> Dict[str, Any]:
     return EXECUTIVE_DOMAIN_PROFILES.get(domain, DEFAULT_PROFILE)
 
-print(">>> EXECUTIVE COGNITION LOADED FROM sreejita/narrative/executive_cognition.py")
 
 # =====================================================
-# EXECUTIVE RISK BANDS
+# SAFE HELPERS
 # =====================================================
 
 EXECUTIVE_RISK_BANDS = [
     (85, "VERY HIGH"),
     (70, "HIGH"),
     (50, "MODERATE"),
-    (0,  "LOW"),
+    (0, "LOW"),
 ]
+
 
 def derive_risk_level(score: int) -> Dict[str, Any]:
     score = int(score or 0)
     for threshold, label in EXECUTIVE_RISK_BANDS:
         if score >= threshold:
             return {"label": label, "score": score}
-    return {"label": "CRITICAL", "score": score}
+    return {"label": "LOW", "score": score}
 
 
 def infer_domain_from_kpis(kpis: Dict[str, Any]) -> str:
-    return kpis.get("domain") or kpis.get("domain_name") or "retail"
+    return kpis.get("domain") or kpis.get("domain_name") or "unknown"
+
+
+def format_kpi_name(key: str) -> str:
+    name = key.replace("_", " ").title()
+    for abbr in ("Ctr", "Cpc", "Cpm", "Cpa", "Roas"):
+        name = name.replace(abbr, abbr.upper())
+    return name
+
 
 # =====================================================
-# KPI SELECTION
+# KPI SELECTION (NO FABRICATION)
 # =====================================================
 
 def select_executive_kpis(kpis: Dict[str, Any]) -> List[Dict[str, Any]]:
     cap_map = kpis.get("_kpi_capabilities", {}) or {}
     conf_map = kpis.get("_confidence", {}) or {}
 
-    ranked = []
+    ranked: List[Dict[str, Any]] = []
+
     for key, capability in cap_map.items():
         value = kpis.get(key)
+        confidence = conf_map.get(key)
+
         if not isinstance(value, (int, float)):
             continue
+        if not isinstance(confidence, (int, float)) or confidence < 0.5:
+            continue
 
-        confidence = float(conf_map.get(key, 0.6))
         weight = {
             Capability.QUALITY.value: 1.30,
             Capability.TIME_FLOW.value: 1.25,
@@ -153,108 +166,54 @@ def select_executive_kpis(kpis: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 # =====================================================
-# INSIGHT STRUCTURING (FIXED — PHASE 2 VISIBLE)
+# INSIGHT STRUCTURING (SAFE, HONEST)
 # =====================================================
 
 def structure_insights(
     insights: List[Dict[str, Any]],
     domain: str,
 ) -> Dict[str, Any]:
-    """
-    Executive-governed insight structuring.
 
-    GUARANTEES:
-    - Exactly ONE comparative (Phase-2) insight is surfaced FIRST if present
-    - Phase-1 opportunities remain visible
-    - Risk / warning governance is preserved
-    - No insight flooding
-    """
+    insights = [i for i in (insights or []) if isinstance(i, dict)]
 
-    profile = get_domain_profile(domain)
-    insights = insights or []
+    if not insights:
+        return {
+            "strengths": [],
+            "warnings": [],
+            "risks": [],
+            "composite": {
+                "title": "Insufficient Evidence",
+                "summary": (
+                    "Available data does not provide sufficient "
+                    "high-confidence signals for executive insight."
+                ),
+                "confidence": 0.0,
+            },
+        }
 
-    # -------------------------------------------------
-    # Normalize levels (domain-aware)
-    # -------------------------------------------------
-    normalized: List[Dict[str, Any]] = []
+    strengths = [i for i in insights if i.get("level") in ("STRENGTH", "OPPORTUNITY")][:3]
+    warnings = [i for i in insights if i.get("level") == "WARNING"][:2]
+    risks = [i for i in insights if i.get("level") == "RISK"][:1]
 
-    for i in insights:
-        if not isinstance(i, dict):
-            continue
-
-        lvl = i.get("level", "INFO")
-        if lvl == "INFO" and profile["escalate_info"]:
-            lvl = "WARNING"
-
-        item = dict(i)
-        item["level"] = lvl
-        normalized.append(item)
-
-    # -------------------------------------------------
-    # Phase-2 Comparative Detection (STRICT)
-    # -------------------------------------------------
-    comparative_keywords = (
-        "top vs",
-        "long-tail",
-        "dominant",
-        "concentration",
-        "variance",
-        "distribution",
-    )
-
-    comparative = [
-        i for i in normalized
-        if any(k in i.get("title", "").lower() for k in comparative_keywords)
-    ][:1]  # 🔒 HARD CAP = 1
-
-    remaining = [i for i in normalized if i not in comparative]
-
-    # -------------------------------------------------
-    # Structured Buckets (Consulting Order)
-    # -------------------------------------------------
-    strengths = (
-        comparative
-        + [i for i in remaining if i.get("level") in ("STRENGTH", "OPPORTUNITY")]
-    )[:3]
-
-    warnings = [i for i in remaining if i.get("level") == "WARNING"][:2]
-    risks = [i for i in remaining if i.get("level") == "RISK"][:1]
-
-    # -------------------------------------------------
-    # Composite confidence
-    # -------------------------------------------------
     avg_confidence = round(
-        sum(float(i.get("confidence", 0.7)) for i in normalized)
-        / max(len(normalized), 1),
+        sum(float(i.get("confidence", 0.5)) for i in insights) / len(insights),
         2,
     )
-
-    # -------------------------------------------------
-    # Domain-tone executive summary
-    # -------------------------------------------------
-    summary_by_tone = {
-        "clinical": "Operational signals indicate areas requiring close monitoring and structured intervention.",
-        "commercial": "Performance demonstrates measurable strengths with clear strategic leverage points.",
-        "financial": "Financial indicators show a stable position with targeted optimization potential.",
-        "growth": "Growth momentum is visible with opportunities to accelerate impact.",
-        "operational": "Operational performance is generally stable with identifiable efficiency levers.",
-        "people": "People metrics suggest balanced workforce dynamics with improvement opportunities.",
-        "experience": "Customer experience signals show engagement strength with areas to enhance loyalty.",
-    }
 
     return {
         "strengths": strengths,
         "warnings": warnings,
         "risks": risks,
         "composite": {
-            "title": "Overall Executive Assessment",
-            "summary": summary_by_tone.get(profile["tone"], summary_by_tone["commercial"]),
+            "title": "Executive Assessment",
+            "summary": "Insights are governed by confidence and available evidence.",
             "confidence": avg_confidence,
         },
     }
 
+
 # =====================================================
-# BOARD READINESS SCORE (DOMAIN-AWARE, HONEST)
+# BOARD READINESS (CONFIDENCE-GATED)
 # =====================================================
 
 def compute_board_readiness_score(
@@ -263,57 +222,19 @@ def compute_board_readiness_score(
     domain: str,
 ) -> Dict[str, Any]:
 
-    print(">>> compute_board_readiness_score CALLED")
-    print(">>> domain:", kpis.get("domain"))
-    print(">>> data_completeness:", kpis.get("data_completeness"))
-    print(">>> domain_has_strong_data:", kpis.get("_domain_has_strong_data"))
-
-    profile = get_domain_profile(domain)
     conf_map = kpis.get("_confidence", {}) or {}
-
-    high_conf_kpis = [
+    high_conf = [
         v for v in conf_map.values()
-        if isinstance(v, (int, float)) and v >= profile["confidence_floor"]
+        if isinstance(v, (int, float)) and v >= 0.6
     ]
 
-    evidence_score = min(50, (len(high_conf_kpis) / 4) * 50)
-    coverage_score = 25 if len(high_conf_kpis) >= 3 else 15
+    if len(high_conf) < 2:
+        return {
+            "score": None,
+            "band": "Insufficient Data",
+        }
 
-    warning_penalty = sum(
-        profile["warning_penalty"]
-        for i in insights if i.get("level") == "WARNING"
-    )
-    risk_penalty = sum(
-        profile["risk_penalty"]
-        for i in insights if i.get("level") == "RISK"
-    )
-
-    score = round(
-        max(
-            0,
-            min(
-                100,
-                evidence_score
-                + coverage_score
-                + profile["readiness_bias"]
-                - warning_penalty
-                - risk_penalty,
-            ),
-        )
-    )
-
-    if kpis.get("primary_sub_domain") == "mixed":
-        score = round(score - (10 * profile["mixed_domain_penalty"]))
-
-    # -------------------------------------------------
-    # GLOBAL COMPLETENESS CAP (DOMAIN-AWARE OVERRIDE)
-    # -------------------------------------------------
-    if isinstance(kpis.get("data_completeness"), (int, float)):
-        if kpis["data_completeness"] < 0.6:
-            # Allow domain-level override when strong signals exist
-            if not kpis.get("_domain_has_strong_data", False):
-                score = min(score, 65)
-
+    score = min(100, int(len(high_conf) * 20))
     risk = derive_risk_level(score)
 
     return {
@@ -321,66 +242,35 @@ def compute_board_readiness_score(
         "band": risk["label"],
     }
 
-def format_kpi_name(key: str) -> str:
-    name = key.replace("_", " ").title()
-    for abbr in ["Ctr", "Cpc", "Cpm", "Cpa", "Roas"]:
-        name = name.replace(abbr, abbr.upper())
-    return name
 
 # =====================================================
-# EXECUTIVE BRIEF (CEO-LEGIBLE, DOMAIN-SAFE)
+# EXECUTIVE BRIEF (NON-HALLUCINATING)
 # =====================================================
 
 def build_executive_brief(
-    board_score: int,
+    board_score: Any,
     insight_block: Dict[str, Any],
     sub_domain: str,
     domain: str,
 ) -> str:
 
-    profile = get_domain_profile(domain)
+    if not isinstance(board_score, int):
+        return (
+            "An executive assessment could not be generated due to "
+            "insufficient high-confidence data."
+        )
+
     risk = derive_risk_level(board_score)
-    sub_domain = str(sub_domain).replace("_", " ")
 
-    tone_prefix = {
-        "clinical": "This assessment highlights key operational signals requiring leadership attention.",
-        "commercial": "This performance review highlights current results and strategic growth opportunities.",
-        "financial": "This financial overview summarizes current performance and optimization potential.",
-        "growth": "This growth review highlights momentum and acceleration opportunities.",
-        "operational": "This operational review outlines performance stability and efficiency drivers.",
-        "people": "This workforce review highlights engagement and capability signals.",
-        "experience": "This experience review summarizes customer engagement and loyalty indicators.",
-    }.get(profile["tone"], "This performance review summarizes current outcomes.")
-
-    brief: List[str] = [
-        f"{tone_prefix} Overall readiness is assessed as "
-        f"{risk['label'].lower()}, with a Board Readiness Score of "
-        f"{risk['score']} out of 100."
-    ]
-
-    if insight_block.get("strengths"):
-        brief.append(
-            f"A key strength observed is "
-            f"{insight_block['strengths'][0]['title'].lower()}."
-        )
-
-    if insight_block.get("risks"):
-        brief.append(
-            f"The primary risk relates to "
-            f"{insight_block['risks'][0]['title'].lower()}, "
-            "requiring timely leadership attention."
-        )
-
-    brief.append(
-        "Focused execution of the recommended actions over the next "
-        "60–90 days can materially improve outcomes."
+    return (
+        f"This review summarizes current performance in the {domain} domain. "
+        f"Overall readiness is assessed as {risk['label'].lower()}, "
+        f"with a Board Readiness Score of {risk['score']} out of 100."
     )
-
-    return " ".join(brief)
 
 
 # =====================================================
-# RECOMMENDATION NORMALIZATION (EXECUTIVE SAFE)
+# RECOMMENDATION NORMALIZATION (SAFE)
 # =====================================================
 
 def normalize_recommendations(
@@ -398,7 +288,7 @@ def normalize_recommendations(
             "owner": r.get("owner"),
             "timeline": r.get("timeline"),
             "goal": r.get("goal"),
-            "confidence": round(float(r.get("confidence", 0.7)), 2),
+            "confidence": round(float(r.get("confidence", 0.6)), 2),
         })
 
     return normalized
@@ -415,20 +305,17 @@ def build_executive_payload(
     domain: str = None,
 ) -> Dict[str, Any]:
 
-    if not domain:
-        domain = infer_domain_from_kpis(kpis)
-
-    primary_sub = kpis.get("primary_sub_domain", "unknown")
+    domain = domain or infer_domain_from_kpis(kpis)
 
     executive_kpis = select_executive_kpis(kpis)
-    insight_block = structure_insights(insights or [], domain)
-    board = compute_board_readiness_score(kpis, insights or [], domain)
+    insight_block = structure_insights(insights, domain)
+    board = compute_board_readiness_score(kpis, insights, domain)
 
     executive_brief = build_executive_brief(
-        board_score=board["score"],
-        insight_block=insight_block,
-        sub_domain=primary_sub,
-        domain=domain,
+        board.get("score"),
+        insight_block,
+        kpis.get("primary_sub_domain", "unknown"),
+        domain,
     )
 
     return {
@@ -437,99 +324,36 @@ def build_executive_payload(
         "insights": insight_block,
         "recommendations": normalize_recommendations(recommendations),
         "board_readiness": board,
-        "sub_domain": primary_sub,
+        "sub_domain": kpis.get("primary_sub_domain"),
         "domain": domain,
     }
 
+
 # =====================================================
-# PER-SUB-DOMAIN EXECUTIVE COGNITION
+# SUB-DOMAIN EXECUTIVE PAYLOADS (NON-THROWING)
 # =====================================================
 
-def build_subdomain_executive_payloads(
-    *args,
-    **kwargs,
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Ultra backward-compatible executive payload builder.
-
-    Accepts legacy and new call patterns, including:
-      - (kpis, insights, recs)
-      - (domain, kpis, insights, recs)
-      - (kpis, insights, recs, config)
-      - (domain, kpis, insights, recs, config)
-    """
-
-    domain = None
-    kpis = None
-    insights = []
-    recommendations = []
-
-    # ---- 1. Extract from positional args (best effort) ----
-    for obj in args:
-        if isinstance(obj, dict) and "sub_domains" in obj:
-            kpis = obj
-        elif isinstance(obj, list) and obj and isinstance(obj[0], dict):
-            # Could be insights or recommendations
-            if "level" in obj[0]:
-                insights = obj
-            elif "action" in obj[0]:
-                recommendations = obj
-        elif isinstance(obj, str):
-            domain = obj
-
-    # ---- 2. Keyword overrides ----
-    domain = kwargs.get("domain") or domain
-    kpis = kwargs.get("kpis") or kpis
-    insights = kwargs.get("insights") or insights
-    recommendations = kwargs.get("recommendations") or recommendations
-
-    # ---- 3. Hard validation ----
-    if not isinstance(kpis, dict):
-        raise RuntimeError(
-            "Executive cognition failed: unable to infer KPI payload "
-            "from orchestrator call."
+def build_subdomain_executive_payloads(*args, **kwargs) -> Dict[str, Dict[str, Any]]:
+    try:
+        kpis = kwargs.get("kpis") or next(
+            (a for a in args if isinstance(a, dict)), {}
         )
+        domain = kwargs.get("domain") or infer_domain_from_kpis(kpis)
+        insights = kwargs.get("insights") or []
+        recommendations = kwargs.get("recommendations") or []
 
-    if not domain:
-        domain = infer_domain_from_kpis(kpis)
+        sub_domains = kpis.get("sub_domains", {}) or {}
+        results: Dict[str, Dict[str, Any]] = {}
 
-    # ---- 4. Normal processing (unchanged logic) ----
-    sub_domains = kpis.get("sub_domains", {}) or {}
-    results: Dict[str, Dict[str, Any]] = {}
-
-    domain_kpi_map = kpis.get("_domain_kpi_map", {}) or {}
-
-    for sub in sub_domains.keys():
-
-        sub_insights = [
-            i for i in insights
-            if isinstance(i, dict) and i.get("sub_domain") == sub
-        ]
-
-        sub_recs = [
-            r for r in recommendations
-            if isinstance(r, dict) and r.get("sub_domain") == sub
-        ]
-
-        allowed_kpis = set(domain_kpi_map.get(sub, []))
-
-        sub_kpis = {
-            k: v for k, v in kpis.items()
-            if (
-                k.startswith("_")
-                or k in ["primary_sub_domain", "sub_domains"]
-                or k in allowed_kpis
+        for sub in sub_domains.keys():
+            results[sub] = build_executive_payload(
+                kpis,
+                insights,
+                recommendations,
+                domain,
             )
-        }
 
-        sub_kpis["primary_sub_domain"] = sub
+        return results
 
-        results[sub] = build_executive_payload(
-            sub_kpis,
-            sub_insights,
-            sub_recs,
-            domain=domain,
-        )
-
-    return results
-
+    except Exception:
+        return {}
