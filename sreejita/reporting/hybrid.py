@@ -19,6 +19,7 @@ class HybridReport(BaseReport):
     - Executive-safe Markdown
     - Deterministic ordering
     - No intelligence computation
+    - Graceful handling of UNKNOWN / AMBIGUOUS domains
     - No empty or duplicated sections
     """
 
@@ -51,7 +52,7 @@ class HybridReport(BaseReport):
             self._write_header(f, run_id, metadata)
 
             # =================================================
-            # GLOBAL EXECUTIVE SUMMARY
+            # GLOBAL EXECUTIVE SUMMARY (SAFE)
             # =================================================
             executive = primary_payload.get("executive")
             if isinstance(executive, dict):
