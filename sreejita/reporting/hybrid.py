@@ -276,3 +276,47 @@ class HybridReport(BaseReport):
                 return f"{v / 1_000:.1f}K"
             return f"{v:.2f}"
         return str(v)
+
+# =====================================================
+# PUBLIC ENTRY POINT (BACKWARD COMPATIBILITY — REQUIRED)
+# =====================================================
+
+def run(input_path: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Legacy-compatible entry point.
+
+    GUARANTEES:
+    - Preserves v1.x / v3.x public API
+    - Delegates orchestration correctly
+    - Never raises import-time errors
+    """
+
+    from pathlib import Path
+    from sreejita.reporting.orchestrator import generate_report_payload
+
+    run_dir = Path(config.get("run_dir", "./runs"))
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    domain_results = generate_report_payload(input_path, config)
+
+    engine = HybridReport()
+    md_path = engine.build(
+        domain_results=domain_results,
+        output_dir=run_dir,
+        metadata=config.get("metadata"),
+    )
+
+    domains = list(domain_results.keys())
+    primary_domain = engine._sort_domains(domains)[0]
+    primary = domain_results.get(primary_domain) or {}
+
+    return {
+        "markdown": str(md_path),
+        "domain_results": domain_results,
+        "primary_domain": primary_domain,
+        "executive": primary.get("executive", {}),
+        "visuals": primary.get("visuals", []),
+        "insights": primary.get("insights", []),
+        "recommendations": primary.get("recommendations", []),
+        "run_dir": str(run_dir),
+    }
