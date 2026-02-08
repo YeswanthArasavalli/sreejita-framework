@@ -1,7 +1,7 @@
 """
 Sreejita Framework CLI
 v3.6 — Universal Domain Intelligence
-Markdown + ReportLab PDF (STABILIZATION MODE)
+STABILIZATION MODE
 """
 
 import argparse
@@ -34,22 +34,20 @@ def run_single_file(
     """
     Programmatic entry point.
 
-    Returns:
-    {
-        "markdown": <path>,
-        "pdf": <path or None>,
-        "run_dir": <path>
-    }
+    GUARANTEES:
+    - Never crashes on ambiguity
+    - Never forces a domain
+    - Always returns paths or None
     """
 
     # -------------------------------------------------
-    # Bootstrap domains (MANDATORY)
+    # BOOTSTRAP DOMAINS (MANDATORY)
     # -------------------------------------------------
     importlib.import_module("sreejita.domains.bootstrap_v2")
     hybrid = importlib.import_module("sreejita.reporting.hybrid")
 
     # -------------------------------------------------
-    # CONFIG & RUN DIRECTORY
+    # CONFIG
     # -------------------------------------------------
     if config is not None:
         final_config = dict(config)
@@ -71,87 +69,78 @@ def run_single_file(
     if domain_hint:
         final_config["domain_hint"] = domain_hint
         final_config["domain_hint_forced"] = False
-        logger.info(
-            "Domain hint provided (advisory only): %s",
-            domain_hint,
-        )
+        logger.info("Domain hint provided (advisory): %s", domain_hint)
 
     # -------------------------------------------------
-    # HYBRID REPORT
+    # HYBRID REPORT (NEVER FAILS)
     # -------------------------------------------------
-    result = hybrid.run(input_path, final_config)
+    try:
+        result = hybrid.run(input_path, final_config)
+    except Exception:
+        logger.exception("Hybrid execution failed")
+        return {
+            "markdown": None,
+            "pdf": None,
+            "run_dir": str(run_dir),
+        }
 
     if not isinstance(result, dict):
-        raise RuntimeError("Hybrid report returned invalid payload")
+        logger.error("Hybrid returned invalid payload")
+        return {
+            "markdown": None,
+            "pdf": None,
+            "run_dir": str(run_dir),
+        }
 
-    required = {"markdown", "domain_results", "run_dir"}
-    missing = required - set(result.keys())
-    if missing:
-        raise RuntimeError(
-            f"Hybrid report missing required keys: {missing}"
-        )
-
+    md_path = result.get("markdown")
+    domain_results = result.get("domain_results", {})
     primary_domain = result.get("primary_domain")
-    domain_results = result["domain_results"]
 
-    if primary_domain is None:
-        logger.warning(
-            "No primary domain selected due to low confidence or ambiguity"
-        )
-
-    primary_payload: Dict[str, Any] = {}
-    if primary_domain and primary_domain in domain_results:
-        primary_payload = domain_results[primary_domain]
-        if not isinstance(primary_payload, dict):
-            raise RuntimeError("Primary domain payload corrupted")
-
-    md_path = Path(result["markdown"])
+    # -------------------------------------------------
+    # PDF (ONLY IF SAFE)
+    # -------------------------------------------------
     pdf_path: Optional[Path] = None
 
-    # -------------------------------------------------
-    # EXECUTIVE PDF (GOVERNED)
-    # -------------------------------------------------
-    if generate_pdf and primary_domain:
-        try:
-            pdf_mod = importlib.import_module(
-                "sreejita.reporting.pdf_renderer"
-            )
+    if generate_pdf and primary_domain and primary_domain in domain_results:
+        payload = domain_results.get(primary_domain, {})
+        executive = payload.get("executive")
 
-            renderer = pdf_mod.ExecutivePDFRenderer()
-            pdf_path = run_dir / "Sreejita_Executive_Report.pdf"
+        if isinstance(executive, dict):
+            try:
+                pdf_mod = importlib.import_module(
+                    "sreejita.reporting.pdf_renderer"
+                )
+                renderer = pdf_mod.ExecutivePDFRenderer()
+                pdf_path = run_dir / "Sreejita_Executive_Report.pdf"
 
-            pdf_payload = {
-                "domain": primary_domain,
-                "executive": primary_payload.get("executive", {}),
-                "visuals": primary_payload.get("visuals", []),
-                "insights": primary_payload.get("insights", []),
-                "recommendations": primary_payload.get(
-                    "recommendations", []
-                ),
-                "kpis": primary_payload.get("kpis", {}),
-            }
+                renderer.render(
+                    payload={
+                        "domain": primary_domain,
+                        "executive": executive,
+                        "visuals": payload.get("visuals", []),
+                        "insights": payload.get("insights", []),
+                        "recommendations": payload.get("recommendations", []),
+                        "kpis": payload.get("kpis", {}),
+                    },
+                    output_path=pdf_path,
+                )
 
-            renderer.render(
-                payload=pdf_payload,
-                output_path=pdf_path,
-            )
+                logger.info("PDF generated: %s", pdf_path)
 
-            logger.info("PDF generated: %s", pdf_path)
-
-        except Exception:
-            logger.exception("PDF generation failed")
-            pdf_path = None
+            except Exception:
+                logger.exception("PDF generation failed")
+                pdf_path = None
+        else:
+            logger.warning("PDF skipped due to suppressed executive content")
 
     elif generate_pdf:
-        logger.warning(
-            "PDF generation skipped due to ambiguous or missing domain"
-        )
+        logger.warning("PDF generation skipped (no confident domain)")
 
     # -------------------------------------------------
     # FINAL RETURN (UI SAFE)
     # -------------------------------------------------
     return {
-        "markdown": str(md_path),
+        "markdown": str(md_path) if md_path else None,
         "pdf": str(pdf_path) if pdf_path else None,
         "run_dir": str(run_dir),
     }
@@ -188,7 +177,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    # ---- CONFIG VALIDATION ----
+    # ---- CONFIG ----
     if (args.batch or args.watch or args.schedule or args.input) and not args.config:
         parser.error("--config is required")
 
@@ -221,7 +210,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     input_path = Path(args.input)
     if not input_path.exists():
-        raise FileNotFoundError(input_path)
+        print(f"File not found: {input_path}")
+        return 1
 
     result = run_single_file(
         input_path=str(input_path),
@@ -230,8 +220,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         domain_hint=args.domain,
     )
 
-    print("\n✅ Report generated successfully")
-    print(f"📝 Markdown: {result['markdown']}")
+    print("\n✅ Run completed")
+    if result["markdown"]:
+        print(f"📝 Markdown: {result['markdown']}")
     if result["pdf"]:
         print(f"📄 PDF: {result['pdf']}")
     print(f"📁 Run folder: {result['run_dir']}")
