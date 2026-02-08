@@ -14,7 +14,7 @@ SUPPORTED_EXT = (".csv", ".xlsx")
 
 
 # =====================================================
-# PROCESS SINGLE FILE (BATCH SAFE, GOVERNED)
+# PROCESS SINGLE FILE (BATCH SAFE, STABILIZED)
 # =====================================================
 
 @retry(times=3, delay=5)
@@ -24,25 +24,22 @@ def run_single_file(
     run_dir: Path,
 ) -> Dict[str, Any]:
     """
-    Stabilization-mode batch contract:
+    Stabilized batch contract:
 
-    - Markdown may always be generated
-    - Executive PDF ONLY if domain is confidently detected
+    - Hybrid is authoritative
     - Ambiguity never crashes batch
-    - No fabricated payloads
+    - PDF generation delegated to Hybrid
+    - No domain inspection here
     """
 
     src = Path(file_path)
 
     # -------------------------------------------------
-    # 1️⃣ Create isolated per-file run directory
+    # 1️⃣ Per-file run directory
     # -------------------------------------------------
     file_run_dir = run_dir / src.stem
     input_dir = file_run_dir / "input"
-    failed_dir = file_run_dir / "failed"
-
     input_dir.mkdir(parents=True, exist_ok=True)
-    failed_dir.mkdir(parents=True, exist_ok=True)
 
     dst = input_dir / src.name
     dst.write_bytes(src.read_bytes())
@@ -50,86 +47,47 @@ def run_single_file(
     log.info("Processing file: %s", src.name)
 
     # -------------------------------------------------
-    # 2️⃣ Force Hybrid output into this folder
+    # 2️⃣ Localized config
     # -------------------------------------------------
     local_config = dict(config)
     local_config["run_dir"] = str(file_run_dir)
 
     # -------------------------------------------------
-    # 3️⃣ Generate Hybrid Output
+    # 3️⃣ Hybrid execution (NEVER TRUST DOMAIN HERE)
     # -------------------------------------------------
     result = run_hybrid(str(dst), local_config)
 
     if not isinstance(result, dict):
         raise RuntimeError("Hybrid returned invalid result")
 
-    md_path = Path(result.get("markdown", ""))
+    markdown = result.get("markdown")
+    pdf = result.get("pdf")
 
-    if not md_path.exists():
-        raise RuntimeError(f"Markdown not generated: {md_path}")
-
-    log.info("Markdown generated: %s", md_path.name)
-
-    # -------------------------------------------------
-    # 4️⃣ Inspect domain decision (if present)
-    # -------------------------------------------------
-    decision = result.get("decision")
-    domain_status = getattr(decision, "status", None)
-    primary_domain = getattr(decision, "selected_domain", None)
-
-    pdf_path = None
-
-    # -------------------------------------------------
-    # 5️⃣ Executive PDF (ONLY IF SAFE)
-    # -------------------------------------------------
-    if domain_status == "detected" and primary_domain:
-        payload = result.get("payload")
-
-        if isinstance(payload, dict):
-            try:
-                from sreejita.reporting.pdf_renderer import (
-                    ExecutivePDFRenderer,
-                )
-
-                pdf_renderer = ExecutivePDFRenderer()
-                pdf_path = file_run_dir / "Sreejita_Executive_Report.pdf"
-
-                pdf_renderer.render(
-                    payload=payload,
-                    output_path=pdf_path,
-                )
-
-                log.info("PDF generated: %s", pdf_path)
-
-            except Exception as e:
-                log.warning(
-                    "PDF generation failed (non-blocking): %s",
-                    e,
-                )
-        else:
-            log.warning(
-                "PDF skipped: payload missing or invalid for %s",
-                src.name,
-            )
-
+    if markdown:
+        md_path = Path(markdown)
+        if not md_path.exists():
+            raise RuntimeError(f"Markdown path invalid: {markdown}")
+        log.info("Markdown generated: %s", md_path.name)
     else:
-        log.warning(
-            "PDF skipped due to ambiguous or insufficient domain: %s",
-            src.name,
-        )
+        log.warning("No markdown generated (ambiguous or insufficient data)")
+
+    if pdf:
+        log.info("PDF generated: %s", pdf)
+    else:
+        log.info("PDF not generated (by design)")
 
     log.info("Completed file: %s", src.name)
 
     return {
         "file": src.name,
-        "markdown": str(md_path),
-        "pdf": str(pdf_path) if pdf_path else None,
+        "markdown": markdown,
+        "pdf": pdf,
         "run_dir": str(file_run_dir),
     }
 
 
 # =====================================================
-# BATCH ENTRY POINT
+# BATCH ENTRY POINT (STABILIZED)
 # =====================================================
 
 def run_batch(
@@ -140,11 +98,10 @@ def run_batch(
     """
     Stabilization-mode batch runner:
 
-    - One timestamped run directory
+    - One timestamped batch run
     - One subfolder per file
-    - Safe retries
-    - Zero global failure risk
-    - Governance preserved at scale
+    - Hybrid governs intelligence
+    - Zero cascade failures
     """
 
     config = load_config(config_path)
@@ -169,12 +126,13 @@ def run_batch(
             run_single_file(src, config, run_dir)
 
         except Exception as e:
+            failed_dir = run_dir / "failed"
+            failed_dir.mkdir(exist_ok=True)
+
             failed_path = (
-                run_dir
-                / "failed"
+                failed_dir
                 / f"{src.stem}_{int(datetime.utcnow().timestamp())}{src.suffix}"
             )
-            failed_path.parent.mkdir(exist_ok=True)
             failed_path.write_bytes(src.read_bytes())
 
             log.error(
@@ -183,4 +141,4 @@ def run_batch(
                 str(e),
             )
 
-    log.info("Batch run completed successfully: %s", run_dir)
+    log.info("Batch run completed: %s", run_dir)
