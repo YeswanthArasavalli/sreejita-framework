@@ -1,6 +1,6 @@
 # =====================================================
 # ORCHESTRATOR — UNIVERSAL (AUTHORITATIVE)
-# Sreejita Framework v3.6.2 (LOCKED)
+# Sreejita Framework v3.6.2 (LOCKED, STABILIZED)
 # =====================================================
 
 import logging
@@ -38,10 +38,6 @@ MAX_EXECUTIVE_VISUALS = 6
 # =====================================================
 
 def _read_tabular_file_safe(path: Path) -> pd.DataFrame:
-    """
-    Load CSV / Excel safely with encoding & engine fallbacks.
-    NEVER mutates filesystem state.
-    """
     if path.suffix.lower() == ".csv":
         for enc in (None, "utf-8", "latin-1", "cp1252"):
             try:
@@ -102,13 +98,14 @@ def generate_report_payload(
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Canonical orchestration pipeline.
+    Canonical orchestration pipeline (STABILIZED).
 
     GUARANTEES:
     - Router is authoritative
-    - No domain guessing
-    - Execution only after confidence gate
-    - Deterministic payload for Hybrid
+    - No domain is forced
+    - Ambiguity is first-class
+    - No cascading failures
+    - Hybrid & PDF always succeed
     """
 
     # -------------------------------------------------
@@ -122,7 +119,7 @@ def generate_report_payload(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # -------------------------------------------------
-    # 1. LOAD DATA (SAFE)
+    # 1. LOAD DATA
     # -------------------------------------------------
     raw_df = _read_tabular_file_safe(input_path)
     if raw_df.empty:
@@ -137,7 +134,7 @@ def generate_report_payload(
     shape_info = detect_dataset_shape(df)
 
     # -------------------------------------------------
-    # 3. DOMAIN DETECTION (ROUTER v2 — AUTHORITATIVE)
+    # 3. DOMAIN DETECTION (ROUTER v2)
     # -------------------------------------------------
     detection = detect_domain(
         df,
@@ -145,27 +142,102 @@ def generate_report_payload(
         strict=False,
     )
 
+    # =================================================
+    # 🚨 NO DOMAIN — SUPPRESSED REPORT (NOT ERROR)
+    # =================================================
     if not detection or not detection.domain:
-        raise RuntimeError(
-            "No confident domain detected. "
-            "Please specify a domain explicitly."
-        )
+        log.warning("No confident domain detected — generating suppressed report")
+
+        return {
+            "unknown": {
+                "domain": None,
+                "confidence": detection.confidence if detection else 0.0,
+                "status": "insufficient_data",
+                "kpis": {},
+                "visuals": [],
+                "insights": [],
+                "recommendations": [],
+                "executive": {
+                    "executive_brief": (
+                        "The dataset does not contain sufficient domain-specific "
+                        "signals to confidently classify it into a known business domain."
+                    ),
+                    "board_readiness": {
+                        "score": None,
+                        "band": "Insufficient Data",
+                    },
+                    "limitations": [
+                        "Domain classification confidence below acceptable threshold",
+                        "Key domain-specific signals were missing or ambiguous",
+                    ],
+                },
+                "shape": shape_info,
+            }
+        }
 
     domain = detection.domain
     confidence = float(detection.confidence or 0.0)
 
+    # =================================================
+    # 🚨 LOW CONFIDENCE — SUPPRESSED EXECUTION
+    # =================================================
     if confidence < MIN_DOMAIN_CONFIDENCE:
         log.warning(
-            "Low domain confidence detected "
+            f"Domain confidence too low for execution "
             f"(domain={domain}, confidence={confidence})"
         )
 
+        return {
+            domain: {
+                "domain": domain,
+                "confidence": confidence,
+                "status": "ambiguous",
+                "kpis": {},
+                "visuals": [],
+                "insights": [],
+                "recommendations": [],
+                "executive": {
+                    "executive_brief": (
+                        f"The dataset weakly resembles the '{domain}' domain, "
+                        "but confidence is insufficient for reliable analysis."
+                    ),
+                    "board_readiness": {
+                        "score": None,
+                        "band": "Low Confidence",
+                    },
+                    "limitations": [
+                        "Domain confidence below execution threshold",
+                    ],
+                },
+                "shape": shape_info,
+            }
+        }
+
     engine = registry.get_domain(domain)
     if engine is None:
-        raise RuntimeError(f"Domain '{domain}' is not registered")
+        log.error(f"Domain '{domain}' is not registered")
+
+        return {
+            domain: {
+                "domain": domain,
+                "confidence": confidence,
+                "status": "unavailable",
+                "kpis": {},
+                "visuals": [],
+                "insights": [],
+                "recommendations": [],
+                "executive": {
+                    "executive_brief": (
+                        f"The detected domain '{domain}' is not available "
+                        "in the current framework configuration."
+                    ),
+                },
+                "shape": shape_info,
+            }
+        }
 
     # -------------------------------------------------
-    # 4. DOMAIN EXECUTION (AUTHORITATIVE)
+    # 4. DOMAIN EXECUTION (SAFE)
     # -------------------------------------------------
     try:
         result = engine.run(
@@ -178,7 +250,6 @@ def generate_report_payload(
         insights = result.get("insights", []) or []
         recommendations = result.get("recommendations", []) or []
 
-        # STORYTELLING (NON-MUTATING)
         insights = apply_storytelling_layer(
             insights=insights,
             kpis=kpis,
@@ -190,10 +261,29 @@ def generate_report_payload(
 
     except Exception as e:
         log.exception(f"Domain execution failed | domain={domain}")
-        raise RuntimeError(f"{domain} execution failed: {e}")
+
+        return {
+            domain: {
+                "domain": domain,
+                "confidence": confidence,
+                "status": "execution_failed",
+                "kpis": {},
+                "visuals": [],
+                "insights": [],
+                "recommendations": [],
+                "executive": {
+                    "executive_brief": (
+                        f"Analysis for domain '{domain}' could not be completed "
+                        "due to an internal processing error."
+                    ),
+                    "limitations": [str(e)],
+                },
+                "shape": shape_info,
+            }
+        }
 
     # -------------------------------------------------
-    # 5. EXECUTIVE VISUAL SELECTION (GOVERNED)
+    # 5. EXECUTIVE VISUAL SELECTION
     # -------------------------------------------------
     visuals = sorted(
         visuals,
@@ -222,7 +312,7 @@ def generate_report_payload(
     executive["sub_domains"] = sub_exec
 
     # -------------------------------------------------
-    # 7. BOARD READINESS TREND (NON-BLOCKING)
+    # 7. BOARD READINESS TREND
     # -------------------------------------------------
     history = _load_history(run_dir)
 
@@ -246,6 +336,8 @@ def generate_report_payload(
     return {
         domain: {
             "domain": domain,
+            "confidence": confidence,
+            "status": "detected",
             "kpis": kpis,
             "visuals": visuals,
             "insights": insights,
