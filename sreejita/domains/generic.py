@@ -9,7 +9,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, Optional, List
 
 from sreejita.domains.base import BaseDomain
 from sreejita.domains.contracts import BaseDomainDetector, DomainDetectionResult
