@@ -1,3 +1,104 @@
+# =====================================================
+# DOMAIN ROUTER — UNIVERSAL (AUTHORITATIVE, FINAL)
+# Sreejita Framework v3.6
+# =====================================================
+
+from typing import List, Dict, Any
+import logging
+
+import pandas as pd
+
+# -----------------------------------------------------
+# DOMAIN IMPORTS
+# -----------------------------------------------------
+
+from sreejita.domains.retail import RetailDomain, RetailDomainDetector
+from sreejita.domains.customer import CustomerDomain, CustomerDomainDetector
+from sreejita.domains.customer_value import CustomerValueDomain, CustomerValueDomainDetector
+from sreejita.domains.finance import FinanceDomain, FinanceDomainDetector
+from sreejita.domains.ecommerce import EcommerceDomain, EcommerceDomainDetector
+from sreejita.domains.healthcare import HealthcareDomain, HealthcareDomainDetector
+from sreejita.domains.marketing import MarketingDomain, MarketingDomainDetector
+from sreejita.domains.hr import HRDomain, HRDomainDetector
+from sreejita.domains.supply_chain import SupplyChainDomain, SupplyChainDomainDetector
+
+# 🚑 GENERIC — ABSOLUTE LAST RESORT
+from sreejita.domains.generic import GenericDomain, GenericDomainDetector
+
+# -----------------------------------------------------
+# CORE FRAMEWORK
+# -----------------------------------------------------
+
+from sreejita.core.decision import DecisionExplanation
+from sreejita.observability.hooks import DecisionObserver
+from sreejita.core.fingerprint import dataframe_fingerprint
+
+log = logging.getLogger("sreejita.router")
+
+# =====================================================
+# CONFIG (LOCKED)
+# =====================================================
+
+MIN_DOMAIN_CONFIDENCE = 0.45  # 🚨 hard guardrail
+
+# =====================================================
+# DOMAIN DETECTORS (GENERIC EXCLUDED FROM COMPETITION)
+# =====================================================
+
+DOMAIN_DETECTORS = [
+    RetailDomainDetector(),
+    CustomerDomainDetector(),
+    CustomerValueDomainDetector(),  # 🆕 ADD HERE
+    FinanceDomainDetector(),
+    EcommerceDomainDetector(),
+    HealthcareDomainDetector(),
+    MarketingDomainDetector(),
+    HRDomainDetector(),
+    SupplyChainDomainDetector(),
+]
+
+GENERIC_DETECTOR = GenericDomainDetector()
+
+# =====================================================
+# DOMAIN IMPLEMENTATION FACTORY (DETERMINISTIC)
+# =====================================================
+
+_DOMAIN_FACTORY = {
+    "retail": RetailDomain,
+    "customer": CustomerDomain,
+    "customer_value": CustomerValueDomain,  # 🆕 ADD
+    "finance": FinanceDomain,
+    "ecommerce": EcommerceDomain,
+    "healthcare": HealthcareDomain,
+    "marketing": MarketingDomain,
+    "hr": HRDomain,
+    "supply_chain": SupplyChainDomain,
+    "generic": GenericDomain,
+}
+
+
+def _get_domain_engine(name: str):
+    cls = _DOMAIN_FACTORY.get(name)
+    try:
+        return cls() if cls else GenericDomain()
+    except Exception:
+        return GenericDomain()
+
+# =====================================================
+# OBSERVABILITY
+# =====================================================
+
+_OBSERVERS: List[DecisionObserver] = []
+
+
+def register_observer(observer: DecisionObserver):
+    if observer:
+        _OBSERVERS.append(observer)
+
+# =====================================================
+# DOMAIN DECISION ENGINE (AUTHORITATIVE)
+# =====================================================
+
 def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
     """
     Stabilization-mode domain decision.
@@ -108,3 +209,21 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
             pass
 
     return decision
+
+# =====================================================
+# DOMAIN PREPROCESSING (UTILITY)
+# =====================================================
+
+def apply_domain(df: pd.DataFrame, domain_name: str):
+    """
+    Apply ONLY domain-level preprocessing.
+    No KPIs, no insights, no visuals.
+    """
+    cls = _DOMAIN_FACTORY.get(domain_name)
+    if not cls:
+        return df
+
+    try:
+        return cls().preprocess(df)
+    except Exception:
+        return df
