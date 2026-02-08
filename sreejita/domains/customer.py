@@ -260,7 +260,7 @@ class CustomerDomain(BaseDomain):
         visual_output_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """
-        Execute the healthcare pipeline with stable, safe outputs.
+        Execute the customer pipeline with stable, safe outputs.
 
         Guarantees:
         - Returns a fixed output schema even on weak data
