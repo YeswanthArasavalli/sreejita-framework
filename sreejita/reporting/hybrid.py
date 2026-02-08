@@ -52,12 +52,18 @@ class HybridReport(BaseReport):
             self._write_header(f, run_id, metadata)
 
             # =================================================
-            # GLOBAL EXECUTIVE SUMMARY (SAFE)
+            # GLOBAL EXECUTIVE SUMMARY
             # =================================================
             executive = primary_payload.get("executive")
             if isinstance(executive, dict):
                 self._write_global_executive(f, executive)
                 self._write_sub_domain_executives(f, executive)
+            else:
+                f.write(
+                    "## Executive Summary\n\n"
+                    "_No executive summary generated due to low-confidence or incomplete data._\n\n"
+                    "---\n\n"
+                )
 
             # =================================================
             # DOMAIN DEEP DIVES
@@ -79,9 +85,14 @@ class HybridReport(BaseReport):
         board = executive.get("board_readiness") or {}
         trend = executive.get("board_readiness_trend") or {}
 
+        f.write("## Executive Summary\n\n")
+
         if isinstance(brief, str) and brief.strip():
-            f.write("## Executive Summary\n\n")
             f.write(f"{brief.strip()}\n\n")
+        else:
+            f.write(
+                "_Executive summary is limited due to data confidence constraints._\n\n"
+            )
 
         if board:
             f.write("### Board Readiness\n")
@@ -115,13 +126,14 @@ class HybridReport(BaseReport):
             brief = payload.get("executive_brief")
             board = payload.get("board_readiness") or {}
 
-            if not brief and not board:
-                continue  # 🔒 avoid empty sections
-
             f.write(f"### {sub.replace('_',' ').title()}\n\n")
 
             if isinstance(brief, str) and brief.strip():
                 f.write(f"{brief.strip()}\n\n")
+            else:
+                f.write(
+                    "_No sub-domain executive summary generated due to limited data._\n\n"
+                )
 
             if board:
                 f.write(
@@ -146,11 +158,11 @@ class HybridReport(BaseReport):
             and k not in {"sub_domains", "primary_sub_domain"}
         }
 
+        f.write("### Key Metrics\n")
+
         if kpis:
-            f.write("### Key Metrics\n")
             f.write("| Metric | Value |\n")
             f.write("| :--- | :--- |\n")
-
             for i, (k, v) in enumerate(kpis.items()):
                 if i >= 9:
                     break
@@ -158,6 +170,10 @@ class HybridReport(BaseReport):
                     f"| {k.replace('_',' ').title()} | {self._format_value(k, v)} |\n"
                 )
             f.write("\n")
+        else:
+            f.write(
+                "_No key metrics are shown due to insufficient or low-confidence data._\n\n"
+            )
 
         # ---------------- VISUALS ----------------
         visuals = [
@@ -165,43 +181,40 @@ class HybridReport(BaseReport):
             if isinstance(v, dict) and v.get("path")
         ][:6]
 
+        f.write("### Visual Evidence\n")
+
         if visuals:
-            f.write("### Visual Evidence\n")
             for vis in visuals:
                 caption = vis.get("caption", "Visual evidence")
                 path = vis.get("path")
-
                 try:
                     conf = int(float(vis.get("confidence", 0)) * 100)
                 except Exception:
                     conf = 0
-
                 f.write(f"![{caption}]({path})\n")
                 f.write(f"> {caption} (Confidence: {conf}%)\n\n")
+        else:
+            f.write(
+                "_No visual evidence generated due to data sparsity, ambiguity, or confidence thresholds._\n\n"
+            )
 
         # ---------------- INSIGHTS ----------------
         raw_insights = result.get("insights") or []
-        insights: List[Dict[str, Any]] = []
+        insights = [i for i in raw_insights if isinstance(i, dict)][:5]
 
-        if isinstance(raw_insights, list):
-            insights = raw_insights
-        elif isinstance(raw_insights, dict):
-            insights = (
-                raw_insights.get("risks", []) +
-                raw_insights.get("warnings", []) +
-                raw_insights.get("strengths", [])
-            )
-
-        insights = [i for i in insights if isinstance(i, dict)][:5]
+        f.write("### Key Insights\n")
 
         if insights:
-            f.write("### Key Insights\n")
             for ins in insights:
                 f.write(
                     f"- **{ins.get('level','INFO')}** — "
                     f"{ins.get('title','')}: {ins.get('so_what','')}\n"
                 )
             f.write("\n")
+        else:
+            f.write(
+                "_No insights generated. Data did not meet confidence or sufficiency thresholds._\n\n"
+            )
 
         # ---------------- RECOMMENDATIONS ----------------
         recs = [
@@ -209,8 +222,9 @@ class HybridReport(BaseReport):
             if isinstance(r, dict)
         ][:5]
 
+        f.write("### Recommendations\n")
+
         if recs:
-            f.write("### Recommendations\n")
             for r in recs:
                 f.write(
                     f"- **{r.get('priority','')}** — {r.get('action','')} "
@@ -218,6 +232,10 @@ class HybridReport(BaseReport):
                     f"Timeline: {r.get('timeline','—')})\n"
                 )
             f.write("\n")
+        else:
+            f.write(
+                "_No recommendations generated due to limited actionable evidence._\n\n"
+            )
 
         f.write("---\n\n")
 
@@ -258,38 +276,3 @@ class HybridReport(BaseReport):
                 return f"{v / 1_000:.1f}K"
             return f"{v:.2f}"
         return str(v)
-
-
-# =====================================================
-# PUBLIC ENTRY POINT (BACKWARD COMPATIBILITY)
-# =====================================================
-
-def run(input_path: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    from sreejita.reporting.orchestrator import generate_report_payload
-
-    run_dir = Path(config.get("run_dir", "./runs"))
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    domain_results = generate_report_payload(input_path, config)
-
-    engine = HybridReport()
-    md_path = engine.build(
-        domain_results=domain_results,
-        output_dir=run_dir,
-        metadata=config.get("metadata"),
-    )
-
-    domains = list(domain_results.keys())
-    primary_domain = engine._sort_domains(domains)[0]
-    primary = domain_results.get(primary_domain) or {}
-
-    return {
-        "markdown": str(md_path),
-        "domain_results": domain_results,
-        "primary_domain": primary_domain,
-        "executive": primary.get("executive", {}),
-        "visuals": primary.get("visuals", []),
-        "insights": primary.get("insights", []),
-        "recommendations": primary.get("recommendations", []),
-        "run_dir": str(run_dir),
-    }
