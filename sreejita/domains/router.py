@@ -1,28 +1,33 @@
 # =====================================================
-# DOMAIN ROUTER — UNIVERSAL (AUTHORITATIVE, FINAL)
+# DOMAIN ROUTER — UNIVERSAL (AUTHORITATIVE, STABILIZED)
 # Sreejita Framework v3.6
 # =====================================================
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
-
 import pandas as pd
 
 # -----------------------------------------------------
-# DOMAIN IMPORTS
+# DOMAIN IMPORTS (LEGACY ROUTER — EXPLICIT)
 # -----------------------------------------------------
 
 from sreejita.domains.retail import RetailDomain, RetailDomainDetector
 from sreejita.domains.customer import CustomerDomain, CustomerDomainDetector
-from sreejita.domains.customer_value import CustomerValueDomain, CustomerValueDomainDetector
+from sreejita.domains.customer_value import (
+    CustomerValueDomain,
+    CustomerValueDomainDetector,
+)
 from sreejita.domains.finance import FinanceDomain, FinanceDomainDetector
 from sreejita.domains.ecommerce import EcommerceDomain, EcommerceDomainDetector
 from sreejita.domains.healthcare import HealthcareDomain, HealthcareDomainDetector
 from sreejita.domains.marketing import MarketingDomain, MarketingDomainDetector
 from sreejita.domains.hr import HRDomain, HRDomainDetector
-from sreejita.domains.supply_chain import SupplyChainDomain, SupplyChainDomainDetector
+from sreejita.domains.supply_chain import (
+    SupplyChainDomain,
+    SupplyChainDomainDetector,
+)
 
-# 🚑 GENERIC — ABSOLUTE LAST RESORT
+# 🚑 GENERIC — LAST RESORT ONLY
 from sreejita.domains.generic import GenericDomain, GenericDomainDetector
 
 # -----------------------------------------------------
@@ -36,10 +41,10 @@ from sreejita.core.fingerprint import dataframe_fingerprint
 log = logging.getLogger("sreejita.router")
 
 # =====================================================
-# CONFIG (LOCKED)
+# GOVERNANCE CONSTANTS (LOCKED)
 # =====================================================
 
-MIN_DOMAIN_CONFIDENCE = 0.45  # 🚨 hard guardrail
+MIN_DOMAIN_CONFIDENCE = 0.45  # hard acceptance gate
 
 # =====================================================
 # DOMAIN DETECTORS (GENERIC EXCLUDED FROM COMPETITION)
@@ -48,7 +53,7 @@ MIN_DOMAIN_CONFIDENCE = 0.45  # 🚨 hard guardrail
 DOMAIN_DETECTORS = [
     RetailDomainDetector(),
     CustomerDomainDetector(),
-    CustomerValueDomainDetector(),  # 🆕 ADD HERE
+    CustomerValueDomainDetector(),
     FinanceDomainDetector(),
     EcommerceDomainDetector(),
     HealthcareDomainDetector(),
@@ -66,7 +71,7 @@ GENERIC_DETECTOR = GenericDomainDetector()
 _DOMAIN_FACTORY = {
     "retail": RetailDomain,
     "customer": CustomerDomain,
-    "customer_value": CustomerValueDomain,  # 🆕 ADD
+    "customer_value": CustomerValueDomain,
     "finance": FinanceDomain,
     "ecommerce": EcommerceDomain,
     "healthcare": HealthcareDomain,
@@ -77,26 +82,26 @@ _DOMAIN_FACTORY = {
 }
 
 
-def _get_domain_engine(name: str):
-    cls = _DOMAIN_FACTORY.get(name)
+def _get_domain_engine(domain_name: str):
+    cls = _DOMAIN_FACTORY.get(domain_name)
     try:
         return cls() if cls else GenericDomain()
     except Exception:
         return GenericDomain()
 
 # =====================================================
-# OBSERVABILITY
+# OBSERVABILITY (OPTIONAL, NON-BLOCKING)
 # =====================================================
 
 _OBSERVERS: List[DecisionObserver] = []
 
 
-def register_observer(observer: DecisionObserver):
+def register_observer(observer: DecisionObserver) -> None:
     if observer:
         _OBSERVERS.append(observer)
 
 # =====================================================
-# DOMAIN DECISION ENGINE (AUTHORITATIVE)
+# DOMAIN DECISION ENGINE (STABILIZATION MODE)
 # =====================================================
 
 def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
@@ -107,7 +112,8 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
     - No domain is forced
     - Ambiguity is explicit
     - Generic is NOT auto-selected
-    - Downstream execution can be safely gated
+    - Execution is gated by confidence
+    - Always returns DecisionExplanation
     """
 
     rule_results: Dict[str, Dict[str, Any]] = {}
@@ -118,6 +124,7 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
     for detector in DOMAIN_DETECTORS:
         try:
             result = detector.detect(df)
+
             if not result or not getattr(result, "domain", None):
                 continue
 
@@ -128,7 +135,9 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
                     "signals": result.signals or {},
                     "detector": detector.__class__.__name__,
                 }
+
         except Exception:
+            # Detector failure must NEVER break routing
             continue
 
     # -------------------------------------------------
@@ -144,6 +153,7 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
             rule_results.items(),
             key=lambda x: x[1]["confidence"],
         )
+
         confidence = float(meta.get("confidence", 0.0))
 
         if confidence >= MIN_DOMAIN_CONFIDENCE:
@@ -153,7 +163,7 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
             status = "ambiguous"
 
     # -------------------------------------------------
-    # EXPLAINABILITY — ALTERNATIVES
+    # EXPLAINABILITY — ALTERNATIVES (ORDERED)
     # -------------------------------------------------
     alternatives = [
         {
@@ -200,7 +210,7 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
     decision.fingerprint = dataframe_fingerprint(df)
 
     # -------------------------------------------------
-    # OBSERVABILITY
+    # OBSERVABILITY (NON-BLOCKING)
     # -------------------------------------------------
     for observer in _OBSERVERS:
         try:
@@ -214,10 +224,15 @@ def decide_domain(df: pd.DataFrame) -> DecisionExplanation:
 # DOMAIN PREPROCESSING (UTILITY)
 # =====================================================
 
-def apply_domain(df: pd.DataFrame, domain_name: str):
+def apply_domain(df: pd.DataFrame, domain_name: str) -> pd.DataFrame:
     """
     Apply ONLY domain-level preprocessing.
-    No KPIs, no insights, no visuals.
+
+    RULES:
+    - No KPIs
+    - No insights
+    - No visuals
+    - Never raises
     """
     cls = _DOMAIN_FACTORY.get(domain_name)
     if not cls:
