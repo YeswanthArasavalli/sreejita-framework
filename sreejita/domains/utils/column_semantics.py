@@ -38,16 +38,7 @@ def _has_any(tokens: Iterable[str], candidates: Iterable[str]) -> bool:
 
 
 def infer_column_roles(df: pd.DataFrame) -> Dict[str, Dict[str, object]]:
-    """Infer column roles using conservative, domain-agnostic heuristics.
-
-    Args:
-        df: Input pandas DataFrame.
-
-    Returns:
-        Mapping of column name to a dict containing:
-          - "roles": set of inferred roles.
-          - "confidence": float confidence score.
-    """
+    """Infer column roles using conservative, domain-agnostic heuristics."""
 
     role_map: Dict[str, Dict[str, object]] = {}
 
@@ -55,7 +46,7 @@ def infer_column_roles(df: pd.DataFrame) -> Dict[str, Dict[str, object]]:
         name = str(column)
         tokens = _tokenize(name)
         roles: Set[str] = set()
-        confidence = 0.0
+        confidence = 0.0  # max role confidence only (no stacking)
 
         is_datetime = pd.api.types.is_datetime64_any_dtype(df[column].dtype)
         is_numeric = pd.api.types.is_numeric_dtype(df[column].dtype)
@@ -66,48 +57,59 @@ def infer_column_roles(df: pd.DataFrame) -> Dict[str, Dict[str, object]]:
             or is_textual
         )
 
+        # Identifier
         if name.lower().endswith("_id") or _has_any(
             tokens, {"id", "identifier", "uuid", "guid", "key"}
         ):
             roles.add("identifier")
             confidence = max(confidence, 0.7)
 
+        # Temporal
         if is_datetime or _has_any(tokens, {"date", "time", "timestamp", "datetime"}):
             roles.add("temporal")
             confidence = max(confidence, 0.6)
 
+        # Monetary (generic, not financial)
         if _has_any(tokens, {"amount", "price", "cost", "total", "currency"}):
             roles.add("monetary")
             confidence = max(confidence, 0.6)
 
+        # Quantity
         if is_numeric and _has_any(tokens, {"qty", "quantity", "count", "number"}):
             roles.add("quantity")
             confidence = max(confidence, 0.5)
 
+        # Categorical
         if is_categorical and _has_any(tokens, {"status", "type", "category", "class"}):
             roles.add("categorical")
             confidence = max(confidence, 0.4)
 
+        # Free text
         if _has_any(tokens, {"description", "desc", "notes", "comment", "text", "message"}):
             roles.add("free_text")
             confidence = max(confidence, 0.4)
 
+        # Demographic
         if _has_any(tokens, {"demographic", "age", "gender", "sex", "dob", "birth"}):
             roles.add("demographic")
             confidence = max(confidence, 0.55)
 
-        if _has_any(tokens, {"clinical"}):
+        # Clinical (role semantics only)
+        if _has_any(tokens, {"clinical", "diagnosis", "procedure", "medication", "icd"}):
             roles.add("clinical")
             confidence = max(confidence, 0.4)
 
-        if _has_any(tokens, {"financial", "finance"}):
+        # Financial (role semantics only)
+        if _has_any(tokens, {"financial", "finance", "account", "balance", "transaction"}):
             roles.add("financial")
             confidence = max(confidence, 0.4)
 
-        if _has_any(tokens, {"operational", "ops"}):
+        # Operational
+        if _has_any(tokens, {"operational", "ops", "process", "stage", "workflow"}):
             roles.add("operational")
             confidence = max(confidence, 0.4)
 
+        # Generic-name confidence cap
         if name.lower() in {"date", "amount", "status"}:
             confidence = min(confidence, _GENERIC_NAME_LOW_CONFIDENCE)
 
@@ -120,14 +122,7 @@ def infer_column_roles(df: pd.DataFrame) -> Dict[str, Dict[str, object]]:
 
 
 def summarize_roles(role_map: Dict[str, Dict[str, object]]) -> Dict[str, int]:
-    """Summarize inferred role counts across columns.
-
-    Args:
-        role_map: Output of infer_column_roles.
-
-    Returns:
-        Mapping of role to count of columns containing that role.
-    """
+    """Summarize inferred role counts across columns."""
 
     summary = {role: 0 for role in ROLES}
     for column_info in role_map.values():
@@ -140,14 +135,7 @@ def summarize_roles(role_map: Dict[str, Dict[str, object]]) -> Dict[str, int]:
 def compute_generic_penalty(role_summary: Dict[str, int]) -> float:
     """Compute a penalty when only generic roles are present.
 
-    Generic roles are identifier, temporal, monetary, quantity, categorical,
-    and free_text. A penalty is applied when no non-generic roles are found.
-
-    Args:
-        role_summary: Output of summarize_roles.
-
-    Returns:
-        Float penalty between 0.0 and 0.5.
+    Penalty is softened for very small schemas to avoid over-penalization.
     """
 
     generic_roles = {
@@ -158,6 +146,7 @@ def compute_generic_penalty(role_summary: Dict[str, int]) -> float:
         "categorical",
         "free_text",
     }
+
     total = sum(role_summary.values())
     if total == 0:
         return 0.5
@@ -165,9 +154,15 @@ def compute_generic_penalty(role_summary: Dict[str, int]) -> float:
     non_generic = sum(
         count for role, count in role_summary.items() if role not in generic_roles
     )
-    if non_generic == 0:
-        return 0.5
 
-    generic = total - non_generic
-    penalty = 0.5 * (generic / total)
-    return max(0.0, min(0.5, penalty))
+    if non_generic == 0:
+        base_penalty = 0.5
+    else:
+        generic = total - non_generic
+        base_penalty = 0.5 * (generic / total)
+
+    # Soften penalty for very small schemas
+    if total < 4:
+        base_penalty *= 0.7
+
+    return max(0.0, min(0.5, base_penalty))
