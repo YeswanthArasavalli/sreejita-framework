@@ -1,7 +1,7 @@
 """
 Sreejita Framework CLI
 v3.6 — Universal Domain Intelligence
-Markdown + ReportLab PDF (STABLE, LOCKED)
+Markdown + ReportLab PDF (STABILIZATION MODE)
 """
 
 import argparse
@@ -49,7 +49,7 @@ def run_single_file(
     hybrid = importlib.import_module("sreejita.reporting.hybrid")
 
     # -------------------------------------------------
-    # CONFIG & RUN DIRECTORY (AUTHORITATIVE)
+    # CONFIG & RUN DIRECTORY
     # -------------------------------------------------
     if config is not None:
         final_config = dict(config)
@@ -66,51 +66,52 @@ def run_single_file(
     logger.info("Run directory: %s", run_dir)
 
     # -------------------------------------------------
-    # DOMAIN HINT (UI / CLI OVERRIDE)
+    # DOMAIN HINT (ADVISORY ONLY)
     # -------------------------------------------------
     if domain_hint:
         final_config["domain_hint"] = domain_hint
-        logger.info("Domain hint applied: %s", domain_hint)
+        final_config["domain_hint_forced"] = False
+        logger.info(
+            "Domain hint provided (advisory only): %s",
+            domain_hint,
+        )
 
     # -------------------------------------------------
-    # HYBRID REPORT (MARKDOWN + DOMAIN RESULTS)
+    # HYBRID REPORT
     # -------------------------------------------------
     result = hybrid.run(input_path, final_config)
 
     if not isinstance(result, dict):
         raise RuntimeError("Hybrid report returned invalid payload")
 
-    required = {
-        "markdown",
-        "domain_results",
-        "primary_domain",
-        "run_dir",
-    }
+    required = {"markdown", "domain_results", "run_dir"}
     missing = required - set(result.keys())
     if missing:
         raise RuntimeError(
             f"Hybrid report missing required keys: {missing}"
         )
 
+    primary_domain = result.get("primary_domain")
     domain_results = result["domain_results"]
-    primary_domain = result["primary_domain"]
 
-    if primary_domain not in domain_results:
-        raise RuntimeError(
-            f"Primary domain '{primary_domain}' missing in results"
+    if primary_domain is None:
+        logger.warning(
+            "No primary domain selected due to low confidence or ambiguity"
         )
 
-    primary_payload = domain_results[primary_domain]
-    if not isinstance(primary_payload, dict):
-        raise RuntimeError("Primary domain payload corrupted")
+    primary_payload: Dict[str, Any] = {}
+    if primary_domain and primary_domain in domain_results:
+        primary_payload = domain_results[primary_domain]
+        if not isinstance(primary_payload, dict):
+            raise RuntimeError("Primary domain payload corrupted")
 
     md_path = Path(result["markdown"])
     pdf_path: Optional[Path] = None
 
     # -------------------------------------------------
-    # EXECUTIVE PDF (STRICT CONTRACT)
+    # EXECUTIVE PDF (GOVERNED)
     # -------------------------------------------------
-    if generate_pdf:
+    if generate_pdf and primary_domain:
         try:
             pdf_mod = importlib.import_module(
                 "sreejita.reporting.pdf_renderer"
@@ -119,7 +120,6 @@ def run_single_file(
             renderer = pdf_mod.ExecutivePDFRenderer()
             pdf_path = run_dir / "Sreejita_Executive_Report.pdf"
 
-            # 🔒 AUTHORITATIVE PDF PAYLOAD
             pdf_payload = {
                 "domain": primary_domain,
                 "executive": primary_payload.get("executive", {}),
@@ -141,6 +141,11 @@ def run_single_file(
         except Exception:
             logger.exception("PDF generation failed")
             pdf_path = None
+
+    elif generate_pdf:
+        logger.warning(
+            "PDF generation skipped due to ambiguous or missing domain"
+        )
 
     # -------------------------------------------------
     # FINAL RETURN (UI SAFE)
