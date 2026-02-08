@@ -1,12 +1,12 @@
 # =====================================================
 # ORCHESTRATOR — UNIVERSAL (AUTHORITATIVE)
-# Sreejita Framework v3.6.2
+# Sreejita Framework v3.6.2 (LOCKED)
 # =====================================================
 
 import logging
 import json
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
 import pandas as pd
 
@@ -26,17 +26,22 @@ from sreejita.core.fingerprint import dataframe_fingerprint
 log = logging.getLogger("sreejita.orchestrator")
 
 # =====================================================
-# GOVERNANCE CONSTANTS
+# GOVERNANCE CONSTANTS (LOCKED)
 # =====================================================
 
 MIN_DOMAIN_CONFIDENCE = 0.40
 MAX_EXECUTIVE_VISUALS = 6
+
 
 # =====================================================
 # SAFE FILE LOADER
 # =====================================================
 
 def _read_tabular_file_safe(path: Path) -> pd.DataFrame:
+    """
+    Load CSV / Excel safely with encoding & engine fallbacks.
+    NEVER mutates filesystem state.
+    """
     if path.suffix.lower() == ".csv":
         for enc in (None, "utf-8", "latin-1", "cp1252"):
             try:
@@ -52,6 +57,7 @@ def _read_tabular_file_safe(path: Path) -> pd.DataFrame:
                 continue
 
     raise RuntimeError(f"Unsupported file type: {path.suffix}")
+
 
 # =====================================================
 # BOARD READINESS HISTORY (NON-BLOCKING)
@@ -86,6 +92,7 @@ def _trend(prev: Optional[int], curr: Optional[int]) -> str:
         return "↓"
     return "→"
 
+
 # =====================================================
 # CANONICAL ENTRY POINT
 # =====================================================
@@ -94,6 +101,15 @@ def generate_report_payload(
     input_path: str,
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    Canonical orchestration pipeline.
+
+    GUARANTEES:
+    - Router is authoritative
+    - No domain guessing
+    - Execution only after confidence gate
+    - Deterministic payload for Hybrid
+    """
 
     # -------------------------------------------------
     # 0. INPUT VALIDATION
@@ -106,7 +122,7 @@ def generate_report_payload(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # -------------------------------------------------
-    # 1. LOAD DATA
+    # 1. LOAD DATA (SAFE)
     # -------------------------------------------------
     raw_df = _read_tabular_file_safe(input_path)
     if raw_df.empty:
@@ -121,23 +137,27 @@ def generate_report_payload(
     shape_info = detect_dataset_shape(df)
 
     # -------------------------------------------------
-    # 3. DOMAIN DETECTION
+    # 3. DOMAIN DETECTION (ROUTER v2 — AUTHORITATIVE)
     # -------------------------------------------------
-    detection_result = detect_domain(
+    detection = detect_domain(
         df,
         domain_hint=config.get("domain_hint"),
         strict=False,
     )
 
-    if not detection_result or not detection_result.domain:
-        raise RuntimeError("No domain detected. Please select a domain manually.")
+    if not detection or not detection.domain:
+        raise RuntimeError(
+            "No confident domain detected. "
+            "Please specify a domain explicitly."
+        )
 
-    domain = detection_result.domain
+    domain = detection.domain
+    confidence = float(detection.confidence or 0.0)
 
-    if detection_result.confidence < MIN_DOMAIN_CONFIDENCE:
+    if confidence < MIN_DOMAIN_CONFIDENCE:
         log.warning(
-            f"Low domain confidence "
-            f"(domain={domain}, confidence={detection_result.confidence})"
+            "Low domain confidence detected "
+            f"(domain={domain}, confidence={confidence})"
         )
 
     engine = registry.get_domain(domain)
@@ -153,12 +173,12 @@ def generate_report_payload(
             visual_output_dir=run_dir / "visuals" / domain,
         )
 
-        kpis = result.get("kpis", {})
-        visuals = result.get("visuals", [])
-        insights = result.get("insights", [])
-        recommendations = result.get("recommendations", [])
+        kpis = result.get("kpis", {}) or {}
+        visuals = result.get("visuals", []) or []
+        insights = result.get("insights", []) or []
+        recommendations = result.get("recommendations", []) or []
 
-        # STORYTELLING LAYER
+        # STORYTELLING (NON-MUTATING)
         insights = apply_storytelling_layer(
             insights=insights,
             kpis=kpis,
@@ -173,7 +193,7 @@ def generate_report_payload(
         raise RuntimeError(f"{domain} execution failed: {e}")
 
     # -------------------------------------------------
-    # 5. EXECUTIVE VISUAL SELECTION
+    # 5. EXECUTIVE VISUAL SELECTION (GOVERNED)
     # -------------------------------------------------
     visuals = sorted(
         visuals,
@@ -192,21 +212,21 @@ def generate_report_payload(
         domain=domain,
     )
 
-    subdomain_executive = build_subdomain_executive_payloads(
+    sub_exec = build_subdomain_executive_payloads(
         kpis,
         insights,
         recommendations,
         domain=domain,
     )
 
-    executive["sub_domains"] = subdomain_executive
+    executive["sub_domains"] = sub_exec
 
     # -------------------------------------------------
-    # 7. BOARD READINESS TREND
+    # 7. BOARD READINESS TREND (NON-BLOCKING)
     # -------------------------------------------------
     history = _load_history(run_dir)
 
-    board = executive.get("board_readiness", {})
+    board = executive.get("board_readiness", {}) or {}
     current_score = board.get("score")
     previous_score = history.get(dataset_key)
 
@@ -221,7 +241,7 @@ def generate_report_payload(
         _save_history(run_dir, history)
 
     # -------------------------------------------------
-    # 8. FINAL PAYLOAD
+    # 8. FINAL PAYLOAD (SINGLE DOMAIN)
     # -------------------------------------------------
     return {
         domain: {
