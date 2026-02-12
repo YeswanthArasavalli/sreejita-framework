@@ -1,4 +1,4 @@
-from sreejita.domains.router import decide_domain
+from sreejita.reporting.orchestrator import generate_report_payload
 
 def test_domain_decision_is_explainable(sample_df):
     decision = decide_domain(sample_df)
