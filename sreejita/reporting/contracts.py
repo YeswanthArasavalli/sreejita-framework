@@ -1,13 +1,14 @@
 """
-Reporting Contracts
--------------------
+Reporting Contracts (Phase 2 — Confidence Safe)
+----------------------------------------------
 Authoritative output contracts for reporting layer.
 
-Rules:
-- Domain engines may return partial or noisy objects
-- Reporting layer MUST normalize them
-- Contracts here are domain-agnostic
-- Never raises
+Phase-2 Rules:
+- Never inflate confidence
+- Never strengthen language by default
+- Preserve suppression and status markers
+- Domain engines may return partial objects
+- Reporting layer normalizes shape, not meaning
 """
 
 from typing import Dict, Any, List
@@ -19,43 +20,54 @@ from copy import deepcopy
 # =====================================================
 
 RECOMMENDATION_FIELDS: Dict[str, Any] = {
-    "action": "",                     # What to do (required)
+    "action": "",
     "priority": "MEDIUM",              # HIGH | MEDIUM | LOW
-    "expected_outcome": "",            # Business / operational outcome
-    "timeline": "TBD",                 # e.g. 30 days, Q2
-    "owner": "Business Team",           # Accountable owner
+    "expected_outcome": "",
+    "timeline": "TBD",
+    "owner": "Business Team",
     "confidence": None,                # 0–1 (optional)
-    "goal": "",                        # Optional strategic intent
-    "rationale": "",                   # Why this recommendation exists
-    "sub_domain": None,                # Optional scoping
+    "signal_strength": None,           # 0–1 (optional)
+    "data_coverage": None,             # 0–1 (optional)
+    "evidence": None,                  # KPI / reference
+    "goal": "",
+    "rationale": "",
+    "sub_domain": None,
+    "status": None,                    # detected | ambiguous | insufficient_data
+    "suppressed": False,
 }
+
+
+def _safe_confidence(value: Any) -> float | None:
+    try:
+        v = float(value)
+        if 0.0 <= v <= 1.0:
+            return round(v, 2)
+    except Exception:
+        pass
+    return None
 
 
 def normalize_recommendation(rec: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normalize a single recommendation to contract.
+    Normalize a single recommendation.
 
     GUARANTEES:
     - Never raises
-    - All required fields exist
-    - Extra fields preserved (forward compatible)
+    - Shape-complete
+    - Never inflates confidence
+    - Preserves suppression/status flags
     """
     base = deepcopy(RECOMMENDATION_FIELDS)
 
     if not isinstance(rec, dict):
         return base
 
-    # Preserve all domain-provided fields
     for k, v in rec.items():
         base[k] = v
 
-    # -------------------------------
-    # HARD SAFETY RULES
-    # -------------------------------
     if not base.get("action"):
         base["action"] = "Review operational performance"
 
-    # Priority normalization
     try:
         base["priority"] = str(base.get("priority", "MEDIUM")).upper()
     except Exception:
@@ -64,12 +76,9 @@ def normalize_recommendation(rec: Dict[str, Any]) -> Dict[str, Any]:
     if base["priority"] not in {"HIGH", "MEDIUM", "LOW"}:
         base["priority"] = "MEDIUM"
 
-    # Confidence normalization
-    if base.get("confidence") is not None:
-        try:
-            base["confidence"] = round(float(base["confidence"]), 2)
-        except Exception:
-            base["confidence"] = None
+    base["confidence"] = _safe_confidence(base.get("confidence"))
+    base["signal_strength"] = _safe_confidence(base.get("signal_strength"))
+    base["data_coverage"] = _safe_confidence(base.get("data_coverage"))
 
     return base
 
@@ -77,24 +86,10 @@ def normalize_recommendation(rec: Dict[str, Any]) -> Dict[str, Any]:
 def normalize_recommendations(
     recommendations: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-    """
-    Normalize a list of recommendations.
-
-    GUARANTEES:
-    - Always returns a list
-    - Each item is contract-compliant
-    """
     if not isinstance(recommendations, list):
         return []
 
-    normalized: List[Dict[str, Any]] = []
-    for rec in recommendations:
-        try:
-            normalized.append(normalize_recommendation(rec))
-        except Exception:
-            continue
-
-    return normalized
+    return [normalize_recommendation(r) for r in recommendations]
 
 
 # =====================================================
@@ -102,12 +97,16 @@ def normalize_recommendations(
 # =====================================================
 
 INSIGHT_FIELDS: Dict[str, Any] = {
-    "level": "INFO",                   # STRENGTH | WARNING | RISK
+    "level": "INFO",                   # INFO | WARNING | RISK | STRENGTH
     "title": "",
     "so_what": "",
-    "confidence": None,                # 0–1 (optional)
-    "sub_domain": None,                # Optional
+    "confidence": None,
+    "signal_strength": None,
+    "data_coverage": None,
+    "sub_domain": None,
     "source": "",
+    "status": None,                    # detected | ambiguous | insufficient_data
+    "suppressed": False,
     "executive_summary_flag": False,
 }
 
@@ -116,9 +115,9 @@ def normalize_insight(insight: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize a single insight.
 
-    GUARANTEES:
-    - Never raises
-    - Always executive-safe
+    Phase-2 Rules:
+    - Never upgrade level by default
+    - Preserve suppression markers
     """
     base = deepcopy(INSIGHT_FIELDS)
 
@@ -136,39 +135,36 @@ def normalize_insight(insight: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         base["level"] = "INFO"
 
-    if base["level"] not in {"STRENGTH", "WARNING", "RISK"}:
-        base["level"] = "WARNING"
+    if base["level"] not in {"INFO", "STRENGTH", "WARNING", "RISK"}:
+        base["level"] = "INFO"
 
-    if base.get("confidence") is not None:
-        try:
-            base["confidence"] = round(float(base["confidence"]), 2)
-        except Exception:
-            base["confidence"] = None
+    base["confidence"] = _safe_confidence(base.get("confidence"))
+    base["signal_strength"] = _safe_confidence(base.get("signal_strength"))
+    base["data_coverage"] = _safe_confidence(base.get("data_coverage"))
 
     return base
 
 
 def normalize_insights(insights: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Normalize a list of insights.
-    """
     if not isinstance(insights, list):
         return []
-
     return [normalize_insight(i) for i in insights]
 
 
 # =====================================================
-# VISUAL OUTPUT CONTRACT (REFERENCE, EXECUTIVE SAFE)
+# VISUAL OUTPUT CONTRACT (REFERENCE, PHASE-2 SAFE)
 # =====================================================
 
 VISUAL_FIELDS: Dict[str, Any] = {
     "path": "",
     "caption": "",
-    "importance": 0.0,     # 0–1 (ranking)
-    "confidence": None,    # 0–1 (optional)
+    "importance": 0.0,
+    "confidence": None,
+    "signal_strength": None,
+    "data_coverage": None,
     "sub_domain": None,
     "inference_type": "direct",  # direct | proxy | fallback
+    "status": None,
 }
 
 
@@ -176,9 +172,9 @@ def normalize_visual(vis: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize a single visual descriptor.
 
-    GUARANTEES:
-    - Never raises
-    - Safe defaults
+    Phase-2 Rules:
+    - Visuals never imply confidence by default
+    - Confidence remains optional
     """
     base = deepcopy(VISUAL_FIELDS)
 
@@ -193,20 +189,14 @@ def normalize_visual(vis: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         base["importance"] = 0.0
 
-    if base.get("confidence") is not None:
-        try:
-            base["confidence"] = round(float(base["confidence"]), 2)
-        except Exception:
-            base["confidence"] = None
+    base["confidence"] = _safe_confidence(base.get("confidence"))
+    base["signal_strength"] = _safe_confidence(base.get("signal_strength"))
+    base["data_coverage"] = _safe_confidence(base.get("data_coverage"))
 
     return base
 
 
 def normalize_visuals(visuals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Normalize a list of visuals.
-    """
     if not isinstance(visuals, list):
         return []
-
     return [normalize_visual(v) for v in visuals]
