@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
 from pathlib import Path
 from typing import Dict, Any, List, Set, Optional
 from matplotlib.ticker import FuncFormatter
@@ -16,7 +17,10 @@ from sreejita.domains.contracts import BaseDomainDetector, DomainDetectionResult
 # HELPERS — MARKETING (DOMAIN-SAFE, GOVERNED)
 # =====================================================
 
-def _safe_div(n: Optional[float], d: Optional[float]) -> Optional[float]:
+def _safe_div(
+    n: Optional[float],
+    d: Optional[float],
+) -> Optional[float]:
     """
     Safe division helper.
 
@@ -24,6 +28,7 @@ def _safe_div(n: Optional[float], d: Optional[float]) -> Optional[float]:
     - Never raises
     - Returns None on invalid input
     - Explicit float coercion
+    - Used across KPI, insight, and visual layers
     """
     try:
         if d in (0, None) or pd.isna(d):
@@ -37,9 +42,14 @@ def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
     """
     Marketing-safe time column detector.
 
+    SUPPORTED SEMANTICS:
+    - Campaign timelines
+    - Spend / performance aggregation
+    - Platform export timestamps
+
     DESIGN PRINCIPLES:
-    - Semantic preference (campaign-aware first)
-    - No domain assumptions
+    - Campaign-aware ordering first
+    - No funnel ownership assumptions
     - Safe fallback only
     - Never mutates df
     """
@@ -47,17 +57,18 @@ def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
     if df is None or df.empty:
         return None
 
-    # Ordered by semantic relevance to Marketing
+    # Ordered by marketing relevance
     candidates = [
         "campaign_date",
         "start_date",
+        "report_date",
         "timestamp",
         "date",
         "day",
     ]
 
     for col in df.columns:
-        col_l = str(col).lower()
+        col_l = str(col).lower().replace(" ", "_")
         if any(k in col_l for k in candidates):
             try:
                 sample = df[col].dropna().iloc[:5]
@@ -70,10 +81,10 @@ def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
 
     return None
 
+
 # =====================================================
 # MARKETING DOMAIN (UNIVERSAL 10/10)
 # =====================================================
-
 class MarketingDomain(BaseDomain):
     name = "marketing"
     description = "Universal Marketing Intelligence (Acquisition, Spend, Channels, Campaigns)"
@@ -89,7 +100,7 @@ class MarketingDomain(BaseDomain):
         - Numeric & datetime normalization
         - NO KPI computation
         - NO sub-domain inference
-        - NO funnel ownership assumptions
+        - NO funnel or revenue ownership assumptions
         """
 
         if not isinstance(df, pd.DataFrame):
@@ -113,12 +124,14 @@ class MarketingDomain(BaseDomain):
                 or resolve_column(df, "cost")
                 or resolve_column(df, "amount_spent")
             ),
-            # Revenue here is ATTRIBUTED outcome, not owned revenue
-            "revenue": (
+
+            # ⚠️ Attributed outcome only (NOT owned revenue)
+            "attributed_revenue": (
                 resolve_column(df, "revenue")
                 or resolve_column(df, "conversion_value")
                 or resolve_column(df, "return")
             ),
+
             "impressions": (
                 resolve_column(df, "impressions")
                 or resolve_column(df, "imps")
@@ -159,7 +172,7 @@ class MarketingDomain(BaseDomain):
         # -------------------------------------------------
         NUMERIC_KEYS = {
             "spend",
-            "revenue",
+            "attributed_revenue",
             "impressions",
             "clicks",
             "conversions",
@@ -168,14 +181,12 @@ class MarketingDomain(BaseDomain):
         for key in NUMERIC_KEYS:
             col = self.cols.get(key)
             if col and col in df.columns:
-                # Strip currency / separators safely
                 if df[col].dtype == object:
                     df[col] = (
                         df[col]
                         .astype(str)
                         .str.replace(r"[^\d\.\-]", "", regex=True)
                     )
-
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
         # -------------------------------------------------
@@ -196,14 +207,17 @@ class MarketingDomain(BaseDomain):
             "impressions",
             "clicks",
             "conversions",
-            "revenue",
+            "attributed_revenue",
         }
-        
+
         present = sum(
-            1 for k, v in self.cols.items()
-            if k in raw_metric_keys and v
+            1
+            for k in raw_metric_keys
+            if self.cols.get(k)
+            and self.cols[k] in df.columns
+            and df[self.cols[k]].notna().any()
         )
-        
+
         self.data_completeness = round(
             present / max(len(raw_metric_keys), 1),
             2,
@@ -211,7 +225,7 @@ class MarketingDomain(BaseDomain):
 
         return df
 
-     # -------------------------------------------------
+    # -------------------------------------------------
     # SAFE RUN WRAPPER (STABLE OUTPUT CONTRACT)
     # -------------------------------------------------
     def run(
@@ -295,7 +309,7 @@ class MarketingDomain(BaseDomain):
     
         GUARANTEES:
         - Capability-driven sub-domains
-        - ≥5–9 KPIs per sub-domain (when data allows)
+        - 5–9 KPIs per sub-domain (when data allows)
         - Confidence-tagged KPIs
         - Attributed (not owned) outcomes
         - No KPI fabrication
@@ -351,7 +365,6 @@ class MarketingDomain(BaseDomain):
             kpis["acquisition_total_impressions"] = impressions
             acq.append("acquisition_total_impressions")
     
-        if impressions is not None:
             kpis["acquisition_avg_impressions_per_row"] = impressions / volume
             acq.append("acquisition_avg_impressions_per_row")
     
@@ -409,7 +422,7 @@ class MarketingDomain(BaseDomain):
             conv.append("conversion_avg_conversions_per_row")
     
         # =================================================
-        # SPEND — EFFICIENCY
+        # SPEND — EFFICIENCY (ATTRIBUTED)
         # =================================================
         spend_k = []
     
@@ -417,9 +430,9 @@ class MarketingDomain(BaseDomain):
             kpis["spend_total_spend"] = spend
             spend_k.append("spend_total_spend")
     
-        revenue = safe_sum(c.get("revenue"))
-        if spend and revenue:
-            kpis["spend_roas_attributed"] = _safe_div(revenue, spend)
+        attributed_revenue = safe_sum(c.get("attributed_revenue"))
+        if spend and attributed_revenue:
+            kpis["spend_roas_attributed"] = _safe_div(attributed_revenue, spend)
             spend_k.append("spend_roas_attributed")
     
         if impressions and spend:
@@ -489,6 +502,7 @@ class MarketingDomain(BaseDomain):
         self._last_kpis = kpis
         return kpis
 
+
     # ---------------- VISUALS (8 CANDIDATES) ----------------
 
     def generate_visuals(
@@ -500,10 +514,10 @@ class MarketingDomain(BaseDomain):
         Marketing Visual Engine (v1.1)
     
         GUARANTEES:
-        - ≥9 candidate visuals per sub-domain (when data allows)
+        - Evidence-only visuals
         - KPI-evidence locked
         - No judgement or thresholds
-        - Many → few governance
+        - Many → few governance (report layer trims)
         """
     
         visuals: List[Dict[str, Any]] = []
@@ -521,7 +535,7 @@ class MarketingDomain(BaseDomain):
             self._last_kpis = kpis
     
         domain_map = kpis.get("_domain_kpi_map", {}) or {}
-        record_count = kpis.get("record_count", 0)
+        record_count = kpis.get("record_count", len(df))
     
         # -------------------------------------------------
         # VISUAL CONFIDENCE
@@ -534,7 +548,7 @@ class MarketingDomain(BaseDomain):
             visual_conf = 0.55
     
         # -------------------------------------------------
-        # HELPERS
+        # SAVE HELPER
         # -------------------------------------------------
         def save(fig, fname, caption, importance, sub_domain, role, axis):
             path = output_dir / fname
@@ -550,151 +564,103 @@ class MarketingDomain(BaseDomain):
                 "confidence": visual_conf,
             })
     
-        def human_fmt(x, _):
-            try:
-                x = float(x)
-            except Exception:
-                return ""
-            if abs(x) >= 1e6:
-                return f"{x/1e6:.1f}M"
-            if abs(x) >= 1e3:
-                return f"{x/1e3:.0f}K"
-            return str(int(x))
-    
         # =================================================
-        # ACQUISITION — VISIBILITY (≥9)
+        # ACQUISITION — REACH & VISIBILITY
         # =================================================
         if "acquisition" in domain_map and c.get("impressions"):
-            # 1. Trend
             if self.time_col:
                 fig, ax = plt.subplots()
                 df.set_index(self.time_col).resample("M")[c["impressions"]].sum().plot(ax=ax)
                 ax.set_title("Impressions Over Time")
-                ax.yaxis.set_major_formatter(FuncFormatter(human_fmt))
                 save(fig, "acq_impressions_trend.png", "Visibility trend", 0.95, "acquisition", "visibility", "time")
     
-            # 2. Distribution
             fig, ax = plt.subplots()
-            df[c["impressions"]].hist(ax=ax, bins=25)
+            df[c["impressions"]].dropna().hist(ax=ax, bins=25)
             ax.set_title("Impressions Distribution")
-            save(fig, "acq_impressions_dist.png", "Reach dispersion", 0.8, "acquisition", "visibility", "distribution")
+            save(fig, "acq_impressions_dist.png", "Reach dispersion", 0.9, "acquisition", "visibility", "distribution")
     
-            # 3. Top campaigns by impressions
             if c.get("campaign"):
                 fig, ax = plt.subplots()
                 df.groupby(c["campaign"])[c["impressions"]].sum().nlargest(10).plot.barh(ax=ax)
                 ax.set_title("Top Campaigns by Impressions")
                 save(fig, "acq_campaign_imps.png", "Campaign reach concentration", 0.85, "acquisition", "structure", "entity")
     
-            # 4–9 fillers (stability / mix)
-            for i in range(6):
+            if c.get("channel"):
                 fig, ax = plt.subplots()
-                ax.bar(["Impressions"], [df[c["impressions"]].mean()])
-                ax.set_title(f"Impression Signal {i+1}")
-                save(fig, f"acq_signal_{i}.png", "Visibility signal", 0.4, "acquisition", "signal", "aggregate")
+                df.groupby(c["channel"])[c["impressions"]].sum().plot(kind="pie", autopct="%1.0f%%", ax=ax)
+                ax.set_title("Impression Share by Channel")
+                save(fig, "acq_channel_mix.png", "Channel reach mix", 0.8, "acquisition", "mix", "composition")
     
         # =================================================
-        # ENGAGEMENT — INTERACTION QUALITY (≥9)
+        # ENGAGEMENT — INTERACTION QUALITY
         # =================================================
         if "engagement" in domain_map and c.get("clicks") and c.get("impressions"):
-            # 1. CTR distribution
             mask = df[c["impressions"]] > 0
+    
             fig, ax = plt.subplots()
             (df.loc[mask, c["clicks"]] / df.loc[mask, c["impressions"]]).hist(ax=ax, bins=20)
             ax.set_title("CTR Distribution")
             save(fig, "eng_ctr_dist.png", "Engagement dispersion", 0.9, "engagement", "engagement", "distribution")
     
-            # 2. Clicks vs impressions
             fig, ax = plt.subplots()
             ax.scatter(df[c["impressions"]], df[c["clicks"]], alpha=0.4)
             ax.set_title("Impressions vs Clicks")
             save(fig, "eng_clicks_vs_imps.png", "Relevance relationship", 0.85, "engagement", "engagement", "correlation")
     
-            # 3. Clicks trend
             if self.time_col:
                 fig, ax = plt.subplots()
                 df.set_index(self.time_col).resample("M")[c["clicks"]].sum().plot(ax=ax)
                 ax.set_title("Clicks Over Time")
                 save(fig, "eng_clicks_trend.png", "Interaction momentum", 0.8, "engagement", "engagement", "time")
     
-            # 4–9 fillers
-            for i in range(6):
-                fig, ax = plt.subplots()
-                ax.bar(["Clicks"], [df[c["clicks"]].mean()])
-                ax.set_title(f"Engagement Signal {i+1}")
-                save(fig, f"eng_signal_{i}.png", "Engagement signal", 0.4, "engagement", "signal", "aggregate")
-    
         # =================================================
-        # CONVERSION — ATTRIBUTED OUTCOMES (≥9)
+        # CONVERSION — ATTRIBUTED OUTCOMES
         # =================================================
         if "conversion" in domain_map and c.get("conversions"):
-            # 1. Trend
             if self.time_col:
                 fig, ax = plt.subplots()
                 df.set_index(self.time_col).resample("M")[c["conversions"]].sum().plot(ax=ax)
                 ax.set_title("Attributed Conversions Over Time")
                 save(fig, "conv_trend.png", "Outcome momentum", 0.95, "conversion", "outcome", "time")
     
-            # 2. Distribution
             fig, ax = plt.subplots()
-            df[c["conversions"]].hist(ax=ax, bins=20)
+            df[c["conversions"]].dropna().hist(ax=ax, bins=20)
             ax.set_title("Conversions Distribution")
-            save(fig, "conv_dist.png", "Outcome dispersion", 0.8, "conversion", "outcome", "distribution")
-    
-            # 3–9 fillers
-            for i in range(7):
-                fig, ax = plt.subplots()
-                ax.bar(["Conversions"], [df[c["conversions"]].mean()])
-                ax.set_title(f"Conversion Signal {i+1}")
-                save(fig, f"conv_signal_{i}.png", "Conversion signal", 0.4, "conversion", "signal", "aggregate")
+            save(fig, "conv_dist.png", "Outcome dispersion", 0.85, "conversion", "outcome", "distribution")
     
         # =================================================
-        # SPEND — EFFICIENCY (≥9)
+        # SPEND — EFFICIENCY
         # =================================================
         if "spend" in domain_map and c.get("spend"):
-            # 1. Spend trend
             if self.time_col:
                 fig, ax = plt.subplots()
                 df.set_index(self.time_col).resample("M")[c["spend"]].sum().plot(ax=ax)
                 ax.set_title("Spend Over Time")
-                ax.yaxis.set_major_formatter(FuncFormatter(human_fmt))
                 save(fig, "spend_trend.png", "Spend trajectory", 0.95, "spend", "cost", "time")
     
-            # 2. Spend distribution
             fig, ax = plt.subplots()
-            df[c["spend"]].hist(ax=ax, bins=20)
+            df[c["spend"]].dropna().hist(ax=ax, bins=20)
             ax.set_title("Spend Distribution")
-            save(fig, "spend_dist.png", "Spend dispersion", 0.8, "spend", "cost", "distribution")
-    
-            # 3–9 fillers
-            for i in range(7):
-                fig, ax = plt.subplots()
-                ax.bar(["Spend"], [df[c["spend"]].mean()])
-                ax.set_title(f"Spend Signal {i+1}")
-                save(fig, f"spend_signal_{i}.png", "Spend signal", 0.4, "spend", "signal", "aggregate")
+            save(fig, "spend_dist.png", "Spend dispersion", 0.85, "spend", "cost", "distribution")
     
         # =================================================
-        # CAMPAIGN — STRUCTURE (≥9)
+        # CAMPAIGN — STRUCTURE & MIX
         # =================================================
         if "campaign" in domain_map and c.get("campaign"):
-            # 1. Campaign volume
             fig, ax = plt.subplots()
             df[c["campaign"]].value_counts().nlargest(10).plot.barh(ax=ax)
             ax.set_title("Top Campaigns by Activity")
             save(fig, "camp_activity.png", "Campaign concentration", 0.9, "campaign", "structure", "entity")
     
-            # 2–9 fillers
-            for i in range(8):
+            if c.get("channel"):
                 fig, ax = plt.subplots()
-                ax.bar(["Campaigns"], [df[c["campaign"]].nunique()])
-                ax.set_title(f"Campaign Structure Signal {i+1}")
-                save(fig, f"camp_signal_{i}.png", "Campaign structure signal", 0.4, "campaign", "signal", "aggregate")
+                df.groupby(c["channel"])[c["campaign"]].nunique().plot.bar(ax=ax)
+                ax.set_title("Campaigns per Channel")
+                save(fig, "camp_channel_structure.png", "Channel structural mix", 0.8, "campaign", "structure", "composition")
     
-        # -------------------------------------------------
-        # FINAL GOVERNANCE — RETURN MANY, REPORT FILTERS
-        # -------------------------------------------------
         visuals.sort(key=lambda v: v["importance"], reverse=True)
-        return visuals[:6]
+        return visuals
+
 
     # ---------------- INSIGHTS (COMPOSITE + ATOMIC) ----------------
 
@@ -724,12 +690,16 @@ class MarketingDomain(BaseDomain):
         # KPI SHORTCUTS (SAFE)
         # -------------------------------------------------
         impressions = kpis.get("acquisition_total_impressions")
+    
         ctr = kpis.get("engagement_ctr")
         clicks = kpis.get("engagement_total_clicks")
+    
         conversions = kpis.get("conversion_attributed_conversions")
         cpa = kpis.get("conversion_cpa")
+    
         roas = kpis.get("spend_roas_attributed")
         spend = kpis.get("spend_total_spend")
+    
         top_channel_share = kpis.get("campaign_top_channel_share")
         top_campaign_share = kpis.get("campaign_top_campaign_share")
     
@@ -785,7 +755,7 @@ class MarketingDomain(BaseDomain):
         # =================================================
         # ENGAGEMENT — INTERACTION QUALITY
         # =================================================
-        if "engagement" in sub_domains and ctr is not None:
+        if "engagement" in sub_domains and any(v is not None for v in (ctr, clicks)):
             insights.extend([
                 {
                     "level": "INFO",
@@ -834,7 +804,7 @@ class MarketingDomain(BaseDomain):
         # =================================================
         # CONVERSION — ATTRIBUTED OUTCOMES
         # =================================================
-        if "conversion" in sub_domains and conversions is not None:
+        if "conversion" in sub_domains and any(v is not None for v in (conversions, cpa)):
             insights.extend([
                 {
                     "level": "INFO",
@@ -858,7 +828,7 @@ class MarketingDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "conversion",
                     "title": "Cost-to-Outcome Relationship",
-                    "so_what": "CPA provides context for efficiency of attributed outcomes.",
+                    "so_what": "Cost-per-acquisition provides context for outcome efficiency.",
                 },
                 {
                     "level": "INFO",
@@ -883,7 +853,7 @@ class MarketingDomain(BaseDomain):
         # =================================================
         # SPEND — EFFICIENCY
         # =================================================
-        if "spend" in sub_domains and spend is not None:
+        if "spend" in sub_domains and any(v is not None for v in (spend, roas)):
             insights.extend([
                 {
                     "level": "INFO",
@@ -895,7 +865,7 @@ class MarketingDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "spend",
                     "title": "Return Efficiency Context",
-                    "so_what": "ROAS provides context for how spend relates to attributed value.",
+                    "so_what": "Return on ad spend provides efficiency context for investment.",
                 },
                 {
                     "level": "INFO",
@@ -932,7 +902,10 @@ class MarketingDomain(BaseDomain):
         # =================================================
         # CAMPAIGN — STRUCTURE & MIX
         # =================================================
-        if "campaign" in sub_domains and (top_campaign_share or top_channel_share):
+        if (
+            "campaign" in sub_domains
+            and any(v is not None for v in (top_campaign_share, top_channel_share))
+        ):
             insights.extend([
                 {
                     "level": "INFO",
@@ -985,8 +958,8 @@ class MarketingDomain(BaseDomain):
             insights.append({
                 "level": "INFO",
                 "sub_domain": "mixed",
-                "title": "Marketing Performance Stable",
-                "so_what": "Available metrics indicate stable marketing operations.",
+                "title": "Marketing Signals Available",
+                "so_what": "Available metrics provide baseline visibility into marketing activity.",
             })
     
         return insights
@@ -1018,12 +991,16 @@ class MarketingDomain(BaseDomain):
         # KPI SHORTCUTS
         # -------------------------------------------------
         impressions = kpis.get("acquisition_total_impressions")
+    
         ctr = kpis.get("engagement_ctr")
         clicks = kpis.get("engagement_total_clicks")
+    
         conversions = kpis.get("conversion_attributed_conversions")
         cpa = kpis.get("conversion_cpa")
+    
         roas = kpis.get("spend_roas_attributed")
         spend = kpis.get("spend_total_spend")
+    
         top_campaign_share = kpis.get("campaign_top_campaign_share")
         top_channel_share = kpis.get("campaign_top_channel_share")
     
@@ -1198,7 +1175,10 @@ class MarketingDomain(BaseDomain):
         # =================================================
         # CAMPAIGN — STRUCTURE & MIX
         # =================================================
-        if "campaign" in sub_domains and (top_campaign_share or top_channel_share):
+        if (
+            "campaign" in sub_domains
+            and any(v is not None for v in (top_campaign_share, top_channel_share))
+        ):
             recs.extend([
                 {
                     "sub_domain": "campaign",
@@ -1286,7 +1266,7 @@ class MarketingDomainDetector(BaseDomainDetector):
         "roas",
     }
 
-    # Ecommerce / Retail ownership signals (used for boundary control)
+    # Ecommerce / Retail ownership signals (boundary control)
     EXCLUSION_TOKENS: Set[str] = {
         "order",
         "orders",
@@ -1309,7 +1289,7 @@ class MarketingDomainDetector(BaseDomainDetector):
         cols = {str(c).lower() for c in df.columns}
 
         # -------------------------------------------------
-        # MARKETING SIGNALS
+        # SIGNAL DETECTION
         # -------------------------------------------------
         marketing_hits = [
             c for c in cols
@@ -1321,17 +1301,16 @@ class MarketingDomainDetector(BaseDomainDetector):
             if any(t in c for t in self.EXCLUSION_TOKENS)
         ]
 
-        # -------------------------------------------------
-        # BASE CONFIDENCE (ANCHOR-BASED)
-        # -------------------------------------------------
-        confidence = 0.0
-
         has_impressions = any("impression" in c for c in cols)
         has_clicks = any("click" in c for c in cols)
         has_spend = any("spend" in c or "cost" in c for c in cols)
         has_campaign = any("campaign" in c or "ad" in c for c in cols)
 
-        # Core marketing signature
+        # -------------------------------------------------
+        # BASE CONFIDENCE (CAPABILITY-BASED)
+        # -------------------------------------------------
+        confidence = 0.0
+
         core_signals = sum([
             has_impressions,
             has_clicks,
@@ -1342,10 +1321,10 @@ class MarketingDomainDetector(BaseDomainDetector):
             confidence = 0.65
 
         if core_signals == 3:
-            confidence = 0.8
+            confidence = 0.80
 
-        # Structural boost
-        if has_campaign:
+        # Structural boost (only if core marketing signals exist)
+        if confidence >= 0.65 and has_campaign:
             confidence += 0.05
 
         # -------------------------------------------------
@@ -1353,13 +1332,12 @@ class MarketingDomainDetector(BaseDomainDetector):
         # -------------------------------------------------
         has_orders = any("order" in c or "transaction" in c for c in cols)
         has_revenue = any("revenue" in c or "sales" in c for c in cols)
+        has_product_focus = any("sku" in c or "product" in c for c in cols)
 
-        # Strong ecommerce signature → downgrade marketing
         if has_orders and has_revenue:
             confidence -= 0.25
 
-        # Retail-like product focus → downgrade
-        if any("sku" in c or "product" in c for c in cols):
+        if has_product_focus:
             confidence -= 0.15
 
         confidence = round(max(0.0, min(0.95, confidence)), 2)
@@ -1368,10 +1346,20 @@ class MarketingDomainDetector(BaseDomainDetector):
         # FINAL DECISION
         # -------------------------------------------------
         if confidence < 0.5:
-            return DomainDetectionResult(None, 0.0, {
-                "marketing_hits": marketing_hits,
-                "exclusion_hits": exclusion_hits,
-            })
+            return DomainDetectionResult(
+                None,
+                0.0,
+                {
+                    "marketing_hits": marketing_hits,
+                    "exclusion_hits": exclusion_hits,
+                    "core_signals": {
+                        "impressions": has_impressions,
+                        "clicks": has_clicks,
+                        "spend": has_spend,
+                        "campaign": has_campaign,
+                    },
+                },
+            )
 
         return DomainDetectionResult(
             domain="marketing",
@@ -1388,5 +1376,14 @@ class MarketingDomainDetector(BaseDomainDetector):
             },
         )
 
+
+# -------------------------------------------------
+# REGISTRATION
+# -------------------------------------------------
 def register(registry):
-    registry.register("marketing", MarketingDomain, MarketingDomainDetector)
+    registry.register(
+        "marketing",
+        MarketingDomain,
+        MarketingDomainDetector,
+    )
+
