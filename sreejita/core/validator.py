@@ -5,8 +5,12 @@ import math
 import pandas as pd
 
 
+# =====================================================
+# NUMERICAL SAFETY HELPERS
+# =====================================================
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Return finite float to avoid NaN/Inf propagation in KPI fields."""
+    """Return finite float to avoid NaN/Inf propagation."""
     try:
         out = float(value)
     except (TypeError, ValueError):
@@ -25,7 +29,15 @@ def _kpi_payload(
     signal_strength: Any,
     data_coverage: Any,
 ) -> Dict[str, float]:
-    """Build required KPI payload with guaranteed keys."""
+    """
+    Standardized KPI payload.
+
+    Semantics:
+    - value: raw metric (counts allowed)
+    - confidence: trust in metric existence (coverage-based)
+    - signal_strength: quality/cleanliness
+    - data_coverage: availability of data
+    """
     return {
         "value": _safe_float(value, default=0.0),
         "confidence": _clamp01(confidence),
@@ -34,75 +46,113 @@ def _kpi_payload(
     }
 
 
+# =====================================================
+# DATA QUALITY VALIDATOR
+# =====================================================
+
 @dataclass
 class DataQualityValidator:
+    """
+    Deterministic, audit-safe data validator.
+
+    - No inference
+    - No hallucination
+    - No domain assumptions
+    """
     strict: bool = False
 
     def validate(self, df: pd.DataFrame) -> Tuple[bool, Dict[str, Any]]:
         results: Dict[str, Any] = {}
 
-        # Guard clause: invalid input should fail safely
+        # -----------------------------
+        # Guard: invalid input
+        # -----------------------------
         if not isinstance(df, pd.DataFrame):
             df = pd.DataFrame()
 
         row_count = int(len(df))
         col_count = int(len(df.columns))
-        coverage = 0.0 if row_count == 0 else 1.0
 
-        # Backward-compatible raw metrics
+        data_coverage = 0.0 if row_count == 0 else 1.0
+
+        # -----------------------------
+        # Raw metrics (backward compatible)
+        # -----------------------------
         results["rows"] = row_count
         results["columns"] = col_count
-        results["missing_values"] = {
+
+        missing_counts = {
             k: int(v) for k, v in df.isnull().sum().to_dict().items()
         }
-        results["duplicate_rows"] = int(df.duplicated().sum())
+        duplicate_rows = int(df.duplicated().sum())
 
+        results["missing_values"] = missing_counts
+        results["duplicate_rows"] = duplicate_rows
+
+        # -----------------------------
+        # Derived ratios
+        # -----------------------------
         missing_ratio = {
             col: _clamp01((count / row_count) if row_count else 0.0)
-            for col, count in results["missing_values"].items()
+            for col, count in missing_counts.items()
         }
 
-        passed = True
-        if self.strict:
-            passed = results["duplicate_rows"] == 0
-
         duplicate_ratio = _clamp01(
-            (results["duplicate_rows"] / row_count) if row_count else 0.0
+            (duplicate_rows / row_count) if row_count else 0.0
         )
 
-        # KPI channel with guaranteed required fields
+        # -----------------------------
+        # Validation decision
+        # -----------------------------
+        passed = True
+        if self.strict:
+            passed = duplicate_rows == 0 and row_count > 0
+
+        # -----------------------------
+        # KPI CHANNEL (SEMANTICALLY CORRECT)
+        # -----------------------------
         results["kpi"] = {
-            "rows": _kpi_payload(row_count, 1.0, 1.0, coverage),
-            "columns": _kpi_payload(col_count, 1.0, 1.0, coverage),
+            "rows": _kpi_payload(
+                row_count,
+                confidence=data_coverage,
+                signal_strength=1.0,
+                data_coverage=data_coverage,
+            ),
+            "columns": _kpi_payload(
+                col_count,
+                confidence=data_coverage,
+                signal_strength=1.0,
+                data_coverage=data_coverage,
+            ),
             "duplicate_rows": _kpi_payload(
-                results["duplicate_rows"],
-                confidence=1.0 - duplicate_ratio,
+                duplicate_rows,
+                confidence=data_coverage,
                 signal_strength=1.0 - duplicate_ratio,
-                data_coverage=coverage,
+                data_coverage=data_coverage,
             ),
             "missing_values": {
                 col: _kpi_payload(
                     count,
-                    confidence=1.0 - missing_ratio.get(col, 0.0),
+                    confidence=data_coverage,
                     signal_strength=1.0 - missing_ratio.get(col, 0.0),
-                    data_coverage=coverage,
+                    data_coverage=data_coverage,
                 )
-                for col, count in results["missing_values"].items()
+                for col, count in missing_counts.items()
             },
             "missing_ratio": {
                 col: _kpi_payload(
                     ratio,
-                    confidence=1.0 - ratio,
+                    confidence=data_coverage,
                     signal_strength=1.0 - ratio,
-                    data_coverage=coverage,
+                    data_coverage=data_coverage,
                 )
                 for col, ratio in missing_ratio.items()
             },
             "validation_passed": _kpi_payload(
                 1.0 if passed else 0.0,
-                confidence=1.0,
-                signal_strength=1.0,
-                data_coverage=coverage,
+                confidence=data_coverage,
+                signal_strength=1.0 if passed else 0.0,
+                data_coverage=data_coverage,
             ),
         }
 
