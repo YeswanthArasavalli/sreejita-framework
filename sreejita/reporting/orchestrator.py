@@ -6,7 +6,7 @@
 import logging
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Iterable, List
 
 import pandas as pd
 
@@ -23,6 +23,7 @@ from sreejita.reporting.recommendation_enricher import enrich_recommendations
 from sreejita.core.dataset_shape import detect_dataset_shape
 from sreejita.core.fingerprint import dataframe_fingerprint
 
+
 log = logging.getLogger("sreejita.orchestrator")
 
 # =====================================================
@@ -31,6 +32,68 @@ log = logging.getLogger("sreejita.orchestrator")
 
 MIN_DOMAIN_CONFIDENCE = 0.40
 MAX_EXECUTIVE_VISUALS = 6
+
+
+# =====================================================
+# CONFIDENCE & EVIDENCE SAFETY HELPERS
+# =====================================================
+
+def _safe_confidence(value: Any) -> Optional[float]:
+    """Return a bounded confidence if finite; otherwise None (no silent defaults)."""
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    if pd.isna(out) or out == float("inf") or out == float("-inf"):
+        return None
+    return max(0.0, min(out, 1.0))
+
+
+def _min_confidence(values: Iterable[Any]) -> Optional[float]:
+    safe_vals = [_safe_confidence(v) for v in values]
+    safe_vals = [v for v in safe_vals if v is not None]
+    if not safe_vals:
+        return None
+    return min(safe_vals)
+
+
+def _extract_confidence(item: Any) -> Optional[float]:
+    if not isinstance(item, dict):
+        return None
+    if "confidence" in item:
+        return _safe_confidence(item.get("confidence"))
+    return None
+
+
+def _extract_signal_strength(item: Any) -> Optional[float]:
+    if not isinstance(item, dict):
+        return None
+    if "signal_strength" in item:
+        return _safe_confidence(item.get("signal_strength"))
+    if isinstance(item.get("kpi"), dict) and "signal_strength" in item.get("kpi", {}):
+        return _safe_confidence(item["kpi"].get("signal_strength"))
+    return None
+
+
+def _extract_data_coverage(item: Any) -> Optional[float]:
+    if not isinstance(item, dict):
+        return None
+    if "data_coverage" in item:
+        return _safe_confidence(item.get("data_coverage"))
+    if isinstance(item.get("kpi"), dict) and "data_coverage" in item.get("kpi", {}):
+        return _safe_confidence(item["kpi"].get("data_coverage"))
+    return None
+
+
+def _is_insufficient_component(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("status") == "insufficient_data"
+
+
+def _recommendation_has_evidence(rec: Any) -> bool:
+    if not isinstance(rec, dict):
+        return False
+    evidence_keys = ("evidence", "kpi", "kpis", "signal_strength", "data_coverage")
+    return any(k in rec and rec.get(k) not in (None, "", [], {}) for k in evidence_keys)
 
 
 # =====================================================
@@ -60,81 +123,62 @@ def _read_tabular_file_safe(path: Path) -> pd.DataFrame:
 # =====================================================
 
 def _history_path(run_dir: Path) -> Path:
-    return run_dir / "board_readiness_history.json"
+    return run_dir / "_board_readiness_history.json"
 
 
 def _load_history(run_dir: Path) -> Dict[str, int]:
     try:
-        with open(_history_path(run_dir), "r") as f:
-            return json.load(f)
+        path = _history_path(run_dir)
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text())
     except Exception:
         return {}
 
 
 def _save_history(run_dir: Path, history: Dict[str, int]) -> None:
     try:
-        with open(_history_path(run_dir), "w") as f:
-            json.dump(history, f, indent=2)
+        path = _history_path(run_dir)
+        path.write_text(json.dumps(history, indent=2))
     except Exception:
         pass
 
 
 def _trend(prev: Optional[int], curr: Optional[int]) -> str:
     if prev is None or curr is None:
-        return "→"
-    if curr >= prev + 5:
-        return "↑"
-    if curr <= prev - 5:
-        return "↓"
-    return "→"
+        return "unknown"
+    if curr > prev:
+        return "up"
+    if curr < prev:
+        return "down"
+    return "flat"
 
 
 # =====================================================
-# CANONICAL ENTRY POINT
+# MAIN ORCHESTRATION ENTRYPOINT
 # =====================================================
 
 def generate_report_payload(
-    input_path: str,
-    config: Dict[str, Any],
+    raw_df: pd.DataFrame,
+    run_dir: Path,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Canonical orchestration pipeline (STABILIZED).
 
-    GUARANTEES:
-    - Router is authoritative
-    - No domain is forced
-    - Ambiguity is first-class
-    - No cascading failures
-    - Hybrid & PDF always succeed
-    """
+    config = config or {}
 
-    # -------------------------------------------------
-    # 0. INPUT VALIDATION
-    # -------------------------------------------------
-    input_path = Path(input_path)
-    if not input_path.exists():
-        raise FileNotFoundError(input_path)
-
-    run_dir = Path(config.get("run_dir", "runs/current"))
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    # -------------------------------------------------
-    # 1. LOAD DATA
-    # -------------------------------------------------
-    raw_df = _read_tabular_file_safe(input_path)
-    if raw_df.empty:
+    if raw_df is None or raw_df.empty:
         raise RuntimeError("Dataset is empty")
 
     df = raw_df.copy(deep=False)
     dataset_key = dataframe_fingerprint(df)
 
     # -------------------------------------------------
-    # 2. DATASET SHAPE (CONTEXT ONLY)
+    # 1. DATASET SHAPE (CONTEXT ONLY)
     # -------------------------------------------------
     shape_info = detect_dataset_shape(df)
 
     # -------------------------------------------------
-    # 3. DOMAIN DETECTION (AUTHORITATIVE)
+    # 2. DOMAIN DETECTION (AUTHORITATIVE)
     # -------------------------------------------------
     detection = detect_domain(
         df,
@@ -146,12 +190,13 @@ def generate_report_payload(
     # 🚨 NO DOMAIN — SUPPRESSED REPORT
     # =================================================
     if not detection or not detection.domain:
-        log.warning("No confident domain detected — suppressed report")
+        det_conf = _safe_confidence(detection.confidence if detection else 0.0)
+        det_conf = det_conf if det_conf is not None else 0.0
 
         return {
             "unknown": {
                 "domain": None,
-                "confidence": detection.confidence if detection else 0.0,
+                "confidence": det_conf,
                 "status": "insufficient_data",
                 "kpis": {},
                 "visuals": [],
@@ -176,17 +221,35 @@ def generate_report_payload(
         }
 
     domain = detection.domain
-    confidence = float(detection.confidence or 0.0)
+    confidence = _safe_confidence(detection.confidence)
+
+    # Guard clause: invalid confidence
+    if confidence is None:
+        return {
+            domain: {
+                "domain": domain,
+                "confidence": 0.0,
+                "status": "insufficient_data",
+                "kpis": {},
+                "visuals": [],
+                "insights": [],
+                "recommendations": [],
+                "executive": {
+                    "executive_brief": (
+                        f"The dataset maps to '{domain}', but decision confidence is unavailable "
+                        "so execution is suppressed for integrity."
+                    ),
+                    "board_readiness": {"score": None, "band": "Insufficient Data"},
+                    "limitations": ["Missing or non-finite domain confidence"],
+                },
+                "shape": shape_info,
+            }
+        }
 
     # =================================================
     # 🚨 LOW CONFIDENCE — EXECUTION SUPPRESSED
     # =================================================
     if confidence < MIN_DOMAIN_CONFIDENCE:
-        log.warning(
-            f"Low domain confidence — execution skipped "
-            f"(domain={domain}, confidence={confidence})"
-        )
-
         return {
             domain: {
                 "domain": domain,
@@ -201,67 +264,30 @@ def generate_report_payload(
                         f"The dataset weakly resembles the '{domain}' domain, "
                         "but confidence is insufficient for reliable analysis."
                     ),
-                    "board_readiness": {
-                        "score": None,
-                        "band": "Low Confidence",
-                    },
-                    "limitations": [
-                        "Domain confidence below execution threshold",
-                    ],
+                    "board_readiness": {"score": None, "band": "Low Confidence"},
                 },
                 "shape": shape_info,
             }
         }
 
-    engine = registry.get_domain(domain)
-    if engine is None:
-        log.error(f"Domain '{domain}' is not registered")
-
-        return {
-            domain: {
-                "domain": domain,
-                "confidence": confidence,
-                "status": "unavailable",
-                "kpis": {},
-                "visuals": [],
-                "insights": [],
-                "recommendations": [],
-                "executive": {
-                    "executive_brief": (
-                        f"The detected domain '{domain}' is not available "
-                        "in the current framework configuration."
-                    ),
-                },
-                "shape": shape_info,
-            }
-        }
-
-    # -------------------------------------------------
-    # 4. DOMAIN EXECUTION (SAFE)
-    # -------------------------------------------------
+    # =================================================
+    # 3. DOMAIN EXECUTION
+    # =================================================
     try:
-        result = engine.run(
-            df,
-            visual_output_dir=run_dir / "visuals" / domain,
+        engine = registry.get(domain)
+        result = engine.run(df)
+
+        kpis = result.get("kpis", {})
+        visuals = result.get("visuals", [])
+        insights = result.get("insights", [])
+        recommendations = enrich_recommendations(
+            result.get("recommendations", []), domain
         )
 
-        kpis = result.get("kpis", {}) or {}
-        visuals = result.get("visuals", []) or []
-        insights = result.get("insights", []) or []
-        recommendations = result.get("recommendations", []) or []
-
-        insights = apply_storytelling_layer(
-            insights=insights,
-            kpis=kpis,
-            df=df,
-            domain=domain,
-        )
-
-        recommendations = enrich_recommendations(recommendations)
+        insights = apply_storytelling_layer(insights, domain)
 
     except Exception as e:
         log.exception(f"Domain execution failed | domain={domain}")
-
         return {
             domain: {
                 "domain": domain,
@@ -281,6 +307,35 @@ def generate_report_payload(
                 "shape": shape_info,
             }
         }
+
+    # -------------------------------------------------
+    # 4. CONFIDENCE-PRESERVING OUTPUT GATES
+    # -------------------------------------------------
+    limitations: List[str] = []
+
+    gated_insights = []
+    for insight in insights:
+        ss = _extract_signal_strength(insight)
+        if ss is None:
+            limitations.append("Suppressed insight with missing signal_strength")
+            continue
+        if ss < MIN_DOMAIN_CONFIDENCE:
+            limitations.append("Suppressed insight below signal_strength threshold")
+            continue
+        gated_insights.append(insight)
+    insights = gated_insights
+
+    gated_recommendations = []
+    for rec in recommendations:
+        if not _recommendation_has_evidence(rec):
+            limitations.append("Suppressed recommendation without evidence linkage")
+            continue
+        rec_ss = _extract_signal_strength(rec)
+        if rec_ss is not None and rec_ss < MIN_DOMAIN_CONFIDENCE:
+            limitations.append("Suppressed recommendation below signal_strength threshold")
+            continue
+        gated_recommendations.append(rec)
+    recommendations = gated_recommendations
 
     # -------------------------------------------------
     # 5. EXECUTIVE VISUAL SELECTION
@@ -308,11 +363,83 @@ def generate_report_payload(
         recommendations,
         domain=domain,
     )
-
     executive["sub_domains"] = sub_exec
 
     # -------------------------------------------------
-    # 7. BOARD READINESS TREND
+    # 7. END-TO-END CONFIDENCE PROPAGATION (MIN-DOMINANT)
+    # -------------------------------------------------
+    conf_candidates = [confidence]
+
+    for v in visuals:
+        c = _extract_confidence(v)
+        if c is not None:
+            conf_candidates.append(c)
+
+    for i in insights:
+        c = _extract_confidence(i)
+        if c is not None:
+            conf_candidates.append(c)
+
+    for r in recommendations:
+        c = _extract_confidence(r)
+        if c is not None:
+            conf_candidates.append(c)
+
+    if isinstance(executive, dict):
+        c = _extract_confidence(executive)
+        if c is not None:
+            conf_candidates.append(c)
+
+    aggregate_conf = _min_confidence(conf_candidates)
+
+    if aggregate_conf is None:
+        return {
+            domain: {
+                "domain": domain,
+                "confidence": 0.0,
+                "status": "insufficient_data",
+                "kpis": kpis,
+                "visuals": [],
+                "insights": [],
+                "recommendations": [],
+                "executive": {
+                    "executive_brief": (
+                        f"Analysis for '{domain}' was suppressed because aggregate confidence "
+                        "could not be computed from finite component confidences."
+                    ),
+                    "board_readiness": {"score": None, "band": "Insufficient Data"},
+                    "limitations": limitations
+                    + ["Missing finite confidence in contributing elements"],
+                },
+                "shape": shape_info,
+            }
+        }
+
+    has_insufficient_component = (
+        any(_is_insufficient_component(i) for i in insights)
+        or any(_is_insufficient_component(r) for r in recommendations)
+        or _is_insufficient_component(executive)
+    )
+
+    if has_insufficient_component:
+        aggregate_status = "insufficient_data"
+    elif aggregate_conf < MIN_DOMAIN_CONFIDENCE:
+        aggregate_status = "ambiguous"
+    else:
+        aggregate_status = "detected"
+
+    if aggregate_status != "detected":
+        if insights:
+            limitations.append("Suppressed insights due to aggregate confidence downgrade")
+        if recommendations:
+            limitations.append(
+                "Suppressed recommendations due to aggregate confidence downgrade"
+            )
+        insights = []
+        recommendations = []
+
+    # -------------------------------------------------
+    # 8. BOARD READINESS TREND
     # -------------------------------------------------
     history = _load_history(run_dir)
 
@@ -326,18 +453,24 @@ def generate_report_payload(
         "trend": _trend(previous_score, current_score),
     }
 
+    if limitations:
+        executive_limitations = executive.get("limitations", [])
+        if not isinstance(executive_limitations, list):
+            executive_limitations = [str(executive_limitations)]
+        executive["limitations"] = executive_limitations + limitations
+
     if isinstance(current_score, int):
         history[dataset_key] = current_score
         _save_history(run_dir, history)
 
     # -------------------------------------------------
-    # 8. FINAL PAYLOAD (SINGLE DOMAIN)
+    # 9. FINAL PAYLOAD (SINGLE DOMAIN)
     # -------------------------------------------------
     return {
         domain: {
             "domain": domain,
-            "confidence": confidence,
-            "status": "detected",
+            "confidence": aggregate_conf,
+            "status": aggregate_status,
             "kpis": kpis,
             "visuals": visuals,
             "insights": insights,
