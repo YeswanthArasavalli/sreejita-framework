@@ -1,11 +1,12 @@
 # =====================================================
-# EXECUTIVE PDF RENDERER — UNIVERSAL (FINAL, LOCKED)
+# EXECUTIVE PDF RENDERER — UNIVERSAL (PHASE 3 TRUST SAFE)
 # Sreejita Framework v3.6
 # =====================================================
 
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List
+import json
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -25,43 +26,51 @@ from reportlab.lib import utils
 
 
 # =====================================================
-# SAFE HELPERS (NEVER FAIL)
+# SAFE HELPERS
 # =====================================================
 
-def _safe_float(v, default=0.0):
+def _safe_float(v, default=None):
     try:
-        return max(0.0, min(float(v), 1.0))
+        f = float(v)
+        if 0.0 <= f <= 1.0:
+            return f
     except Exception:
-        return default
+        pass
+    return default
+
+
+def _load_visual_metadata(path: Path) -> Dict[str, Any]:
+    meta_path = path.with_suffix(".json")
+    if meta_path.exists():
+        try:
+            return json.loads(meta_path.read_text())
+        except Exception:
+            pass
+    return {}
 
 
 def format_value(v: Any) -> str:
     """
-    Executive-safe numeric formatting.
+    Phase-3 executive-safe numeric formatting.
+    Avoids false precision.
     """
     if v is None:
-        return "—"
+        return "Insufficient data"
+
     try:
-        if isinstance(v, (int, float)):
-            if 0 <= v <= 1:
-                return f"{v:.1%}"
-            if abs(v) >= 1_000_000:
-                return f"{v / 1_000_000:.1f}M"
-            if abs(v) >= 1_000:
-                return f"{v / 1_000:.1f}K"
-            return f"{v:.2f}"
-        return str(v)
+        v = float(v)
     except Exception:
-        return "—"
+        return "Insufficient data"
 
+    if 0 <= v <= 1:
+        return f"~{v * 100:.0f}%"
 
-def confidence_badge(conf: float) -> str:
-    conf = _safe_float(conf)
-    if conf >= 0.85:
-        return "High"
-    if conf >= 0.70:
-        return "Medium"
-    return "Low"
+    if abs(v) >= 1_000_000:
+        return f"~{v / 1_000_000:.1f}M"
+    if abs(v) >= 1_000:
+        return f"~{v / 1_000:.0f}K"
+
+    return f"{v:.0f}"
 
 
 # =====================================================
@@ -70,13 +79,13 @@ def confidence_badge(conf: float) -> str:
 
 class ExecutivePDFRenderer:
     """
-    STRICTLY PRESENTATIONAL PDF RENDERER
+    STRICTLY PRESENTATIONAL PDF RENDERER (PHASE 3)
 
     GUARANTEES:
     - Never computes intelligence
-    - Never assumes domain structure
-    - Never crashes on weak / partial data
-    - Board & CXO safe
+    - Never inflates certainty
+    - Makes suppression visible
+    - Board-safe under weak data
     """
 
     BORDER = HexColor("#e5e7eb")
@@ -105,67 +114,52 @@ class ExecutivePDFRenderer:
         story: List[Any] = []
 
         # -------------------------------------------------
-        # STYLES (SAFE ADD)
+        # STYLES
         # -------------------------------------------------
-        if "SR_Title" not in styles:
-            styles.add(ParagraphStyle(
-                "SR_Title",
-                fontSize=22,
-                alignment=TA_CENTER,
-                spaceAfter=18,
-                fontName="Helvetica-Bold",
-            ))
+        styles.add(ParagraphStyle(
+            "SR_Title",
+            fontSize=22,
+            alignment=TA_CENTER,
+            spaceAfter=18,
+            fontName="Helvetica-Bold",
+        ))
 
-        if "SR_Section" not in styles:
-            styles.add(ParagraphStyle(
-                "SR_Section",
-                fontSize=15,
-                spaceBefore=18,
-                spaceAfter=10,
-                fontName="Helvetica-Bold",
-            ))
+        styles.add(ParagraphStyle(
+            "SR_Section",
+            fontSize=15,
+            spaceBefore=18,
+            spaceAfter=10,
+            fontName="Helvetica-Bold",
+        ))
 
-        if "SR_Body" not in styles:
-            styles.add(ParagraphStyle(
-                "SR_Body",
-                fontSize=11,
-                leading=15,
-                spaceAfter=6,
-            ))
+        styles.add(ParagraphStyle(
+            "SR_Body",
+            fontSize=11,
+            leading=15,
+            spaceAfter=6,
+        ))
+
+        styles.add(ParagraphStyle(
+            "SR_Muted",
+            fontSize=10,
+            leading=14,
+            textColor=HexColor("#6b7280"),
+        ))
 
         # -------------------------------------------------
         # SAFE EXTRACTION
         # -------------------------------------------------
         executive = payload.get("executive") or {}
         visuals = payload.get("visuals") or []
-        raw_insights = payload.get("insights") or []
+        insights = payload.get("insights") or []
         recommendations = payload.get("recommendations") or []
-        raw_kpis = payload.get("kpis") or {}
+        kpis = payload.get("kpis") or {}
 
-        # -------------------------------------------------
-        # NORMALIZE INSIGHTS (LIST ONLY)
-        # -------------------------------------------------
-        insights: List[Dict[str, Any]] = []
-
-        if isinstance(raw_insights, list):
-            insights = raw_insights
-        elif isinstance(raw_insights, dict):
-            insights = (
-                raw_insights.get("risks", []) +
-                raw_insights.get("warnings", []) +
-                raw_insights.get("strengths", [])
-            )
-
-        insights = [i for i in insights if isinstance(i, dict)]
+        domain = str(payload.get("domain", "—")).replace("_", " ").title()
 
         # =================================================
         # PAGE 1 — EXECUTIVE OVERVIEW
         # =================================================
-        board = executive.get("board_readiness", {}) or {}
-        trend = executive.get("board_readiness_trend", {}) or {}
-
-        domain = str(payload.get("domain", "—")).replace("_", " ").title()
-
         story.append(Paragraph(
             "Sreejita Executive Intelligence Report",
             styles["SR_Title"],
@@ -173,9 +167,6 @@ class ExecutivePDFRenderer:
 
         story.append(Paragraph(
             f"<b>Domain:</b> {domain}<br/>"
-            f"<b>Board Readiness:</b> {board.get('score','—')} / 100 "
-            f"({board.get('band','—')})<br/>"
-            f"<b>Trend:</b> {trend.get('trend','→')}<br/>"
             f"<b>Generated:</b> {datetime.utcnow():%Y-%m-%d}",
             styles["SR_Body"],
         ))
@@ -187,61 +178,65 @@ class ExecutivePDFRenderer:
             story.append(Paragraph(brief.strip(), styles["SR_Body"]))
 
         # =================================================
-        # KPI TABLE (EXECUTIVE SAFE)
+        # KPI TABLE
         # =================================================
-        kpi_items = [
-            (k, v) for k, v in raw_kpis.items()
-            if isinstance(k, str) and not k.startswith("_")
-        ][:9]
-
-        if not kpi_items:
-            kpi_items = [("Data Coverage", None)]
-
-        rows = [["Metric", "Value"]]
-        for k, v in kpi_items:
-            rows.append([k.replace("_", " ").title(), format_value(v)])
-
-        table = Table(rows, colWidths=[4.5 * inch, 2.5 * inch])
-        table.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.5, self.BORDER),
-            ("BACKGROUND", (0, 0), (-1, 0), self.HEADER_BG),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("PADDING", (0, 0), (-1, -1), 8),
-        ]))
-
         story.append(Spacer(1, 14))
         story.append(Paragraph("Key Performance Indicators", styles["SR_Section"]))
-        story.append(table)
+
+        if not kpis:
+            story.append(Paragraph(
+                "Insufficient data to compute reliable KPIs.",
+                styles["SR_Muted"],
+            ))
+        else:
+            rows = [["Metric", "Value"]]
+            for k, v in list(kpis.items())[:8]:
+                rows.append([k.replace("_", " ").title(), format_value(v)])
+
+            table = Table(rows, colWidths=[4.5 * inch, 2.5 * inch])
+            table.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.5, self.BORDER),
+                ("BACKGROUND", (0, 0), (-1, 0), self.HEADER_BG),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("PADDING", (0, 0), (-1, -1), 8),
+            ]))
+            story.append(table)
 
         # =================================================
-        # VISUAL EVIDENCE (MAX 6, SAFE LOAD)
+        # VISUAL EVIDENCE
         # =================================================
         valid_visuals = [
             v for v in visuals
             if isinstance(v, dict) and Path(v.get("path", "")).exists()
         ][:6]
 
-        for i in range(0, len(valid_visuals), 2):
+        if valid_visuals:
             story.append(PageBreak())
             story.append(Paragraph("Visual Evidence", styles["SR_Section"]))
 
-            for v in valid_visuals[i:i + 2]:
-                try:
-                    img_path = Path(v["path"])
-                    img = utils.ImageReader(str(img_path))
-                    iw, ih = img.getSize()
+            for v in valid_visuals:
+                path = Path(v["path"])
+                meta = _load_visual_metadata(path)
 
+                try:
+                    img = utils.ImageReader(str(path))
+                    iw, ih = img.getSize()
                     w = 6 * inch
                     h = min(w * ih / iw, 4 * inch)
 
-                    conf = _safe_float(v.get("confidence"))
+                    story.append(Image(str(path), width=w, height=h))
 
-                    story.append(Image(str(img_path), width=w, height=h))
-                    story.append(Paragraph(
-                        f"{v.get('caption','Visual evidence')} "
-                        f"<i>(Confidence: {confidence_badge(conf)})</i>",
-                        styles["SR_Body"],
-                    ))
+                    if meta.get("status") != "rendered":
+                        story.append(Paragraph(
+                            f"<b>Insufficient data:</b> {meta.get('reason','')}",
+                            styles["SR_Muted"],
+                        ))
+                    else:
+                        story.append(Paragraph(
+                            v.get("caption", "Visual evidence"),
+                            styles["SR_Body"],
+                        ))
+
                     story.append(Spacer(1, 12))
                 except Exception:
                     continue
@@ -249,17 +244,22 @@ class ExecutivePDFRenderer:
         # =================================================
         # INSIGHTS
         # =================================================
-        if insights:
-            story.append(PageBreak())
-            story.append(Paragraph("Key Insights", styles["SR_Section"]))
+        story.append(PageBreak())
+        story.append(Paragraph("Key Insights", styles["SR_Section"]))
 
+        if not insights:
+            story.append(Paragraph(
+                "No reliable insights generated due to weak or insufficient signal.",
+                styles["SR_Muted"],
+            ))
+        else:
             for ins in insights[:5]:
                 story.append(Paragraph(
-                    f"<b>{ins.get('level','INFO')}:</b> {ins.get('title','')}",
+                    f"<b>{ins.get('title','')}</b>",
                     styles["SR_Body"],
                 ))
                 story.append(Paragraph(
-                    ins.get("so_what",""),
+                    ins.get("so_what", ""),
                     styles["SR_Body"],
                 ))
                 story.append(Spacer(1, 8))
@@ -267,26 +267,25 @@ class ExecutivePDFRenderer:
         # =================================================
         # RECOMMENDATIONS
         # =================================================
-        if recommendations:
-            story.append(PageBreak())
-            story.append(Paragraph("Recommendations", styles["SR_Section"]))
+        story.append(PageBreak())
+        story.append(Paragraph("Recommendations", styles["SR_Section"]))
 
+        if not recommendations:
+            story.append(Paragraph(
+                "No recommendations issued due to insufficient supporting evidence.",
+                styles["SR_Muted"],
+            ))
+        else:
             for rec in recommendations[:5]:
-                if not isinstance(rec, dict):
-                    continue
-
                 story.append(Paragraph(
-                    f"<b>{rec.get('priority','')}:</b> {rec.get('action','')}",
+                    f"<b>{rec.get('action','')}</b>",
                     styles["SR_Body"],
                 ))
-
                 story.append(Paragraph(
-                    f"<i>Owner:</i> {rec.get('owner','—')} | "
-                    f"<i>Timeline:</i> {rec.get('timeline','—')}<br/>"
-                    f"<i>Goal:</i> {rec.get('goal','—')}",
-                    styles["SR_Body"],
+                    f"Owner: {rec.get('owner','—')} | "
+                    f"Timeline: {rec.get('timeline','—')}",
+                    styles["SR_Muted"],
                 ))
-
                 story.append(Spacer(1, 10))
 
         doc.build(story)
