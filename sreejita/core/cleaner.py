@@ -1,9 +1,13 @@
 import math
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pandas as pd
 import numpy as np
 
+
+# =====================================================
+# NUMERICAL SAFETY HELPERS
+# =====================================================
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     """Return finite float; fallback for NaN/Inf/non-numeric values."""
@@ -25,7 +29,13 @@ def _kpi_payload(
     signal_strength: Any,
     data_coverage: Any,
 ) -> Dict[str, float]:
-    """Standardized KPI payload with guaranteed required fields."""
+    """
+    Standardized KPI payload with guaranteed required fields.
+
+    Rules:
+    - value may be unbounded (counts)
+    - confidence, signal_strength, data_coverage ∈ [0, 1]
+    """
     return {
         "value": _safe_float(value, default=0.0),
         "confidence": _clamp01(confidence),
@@ -34,29 +44,38 @@ def _kpi_payload(
     }
 
 
-def clean_dataframe(df: pd.DataFrame, preserve_date_cols: list = None):
+# =====================================================
+# DATAFRAME CLEANER
+# =====================================================
+
+def clean_dataframe(
+    df: pd.DataFrame,
+    preserve_date_cols: List[str] | None = None,
+) -> Dict[str, Any]:
     """
-    Clean a dataframe and produce a data integrity summary.
+    Deterministically clean a dataframe and produce audit-safe metrics.
 
-    This function performs light, deterministic cleaning and reports
-    data quality metrics required for audit and review readiness.
-
-    Args:
-        df: Input dataframe
-        preserve_date_cols: List of columns to preserve as-is (e.g., date columns)
+    This function:
+    - Never infers meaning
+    - Never hallucinates values
+    - Never mutates dates unless allowed
+    - Reports data integrity KPIs
 
     Returns:
-        dict with:
-            - 'df': cleaned dataframe
-            - 'summary': data quality and structural summary
+        {
+            "df": cleaned_dataframe,
+            "summary": audit_summary
+        }
     """
+
     preserve_date_cols = preserve_date_cols or []
 
-    # Guard clause: callers may pass None/non-DataFrame
+    # -----------------------------
+    # Guard: invalid input
+    # -----------------------------
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame()
 
-    df_original = df.copy()
     df = df.copy()
 
     # -----------------------------
@@ -67,10 +86,11 @@ def clean_dataframe(df: pd.DataFrame, preserve_date_cols: list = None):
         .str.strip()
         .str.lower()
         .str.replace(" ", "_")
+        .str.replace("-", "_")
     )
 
     # -----------------------------
-    # Data quality metrics (pre-clean)
+    # Pre-clean metrics
     # -----------------------------
     total_rows = int(len(df))
     duplicate_rows = int(df.duplicated().sum())
@@ -95,32 +115,46 @@ def clean_dataframe(df: pd.DataFrame, preserve_date_cols: list = None):
     df = df.replace(r"^\s*$", np.nan, regex=True)
 
     # -----------------------------
-    # Clean whitespace in object columns
+    # Clean object columns (SAFE)
     # -----------------------------
     for c in df.select_dtypes(include="object"):
-        df[c] = df[c].astype(str).str.strip()
+        if c in preserve_date_cols:
+            continue
+        df[c] = df[c].where(df[c].isna(), df[c].astype(str).str.strip())
 
     # -----------------------------
-    # Simple outlier signal (numeric only)
+    # Outlier analysis (numeric only)
     # -----------------------------
-    outlier_flags = {}
-    outlier_kpis = {}
+    outlier_flags: Dict[str, int] = {}
+    outlier_kpis: Dict[str, Dict[str, float]] = {}
 
     numeric_cols = df.select_dtypes(include=[np.number]).columns
 
     for col in numeric_cols:
-        series = df[col].replace([np.inf, -np.inf], np.nan).dropna()
-        coverage = _clamp01((len(series) / len(df)) if len(df) else 0.0)
+        series = df[col].replace([np.inf, -np.inf], np.nan)
+        coverage = _clamp01(len(series.dropna()) / total_rows) if total_rows else 0.0
 
-        if series.empty:
+        if series.dropna().empty:
             outlier_flags[col] = 0
-            outlier_kpis[col] = _kpi_payload(0.0, 0.0, 0.0, coverage)
+            outlier_kpis[col] = _kpi_payload(
+                value=0,
+                confidence=coverage,
+                signal_strength=0.0,
+                data_coverage=coverage,
+            )
             continue
 
         std = _safe_float(series.std(), default=0.0)
+
+        # Zero variance → no signal, not an error
         if std == 0.0:
             outlier_flags[col] = 0
-            outlier_kpis[col] = _kpi_payload(0.0, coverage, 0.0, coverage)
+            outlier_kpis[col] = _kpi_payload(
+                value=0,
+                confidence=coverage,
+                signal_strength=0.0,
+                data_coverage=coverage,
+            )
             continue
 
         z_scores = (series - series.mean()) / std
@@ -130,7 +164,7 @@ def clean_dataframe(df: pd.DataFrame, preserve_date_cols: list = None):
         outlier_flags[col] = outlier_count
 
         signal_strength = _clamp01(
-            1.0 - (outlier_count / max(len(series), 1))
+            1.0 - (outlier_count / max(len(z_scores), 1))
         )
 
         outlier_kpis[col] = _kpi_payload(
@@ -144,13 +178,13 @@ def clean_dataframe(df: pd.DataFrame, preserve_date_cols: list = None):
     # Reset index
     # -----------------------------
     df = df.reset_index(drop=True)
+    rows_after_cleaning = int(len(df))
 
     # -----------------------------
-    # Summary (audit-friendly)
+    # Summary (audit-safe)
     # -----------------------------
-    rows_after_cleaning = int(len(df))
     dedupe_ratio = _clamp01(
-        (duplicate_rows / total_rows) if total_rows else 0.0
+        duplicate_rows / total_rows if total_rows else 0.0
     )
 
     summary = {
@@ -163,32 +197,35 @@ def clean_dataframe(df: pd.DataFrame, preserve_date_cols: list = None):
         "dtypes": df.dtypes.to_dict(),
         "kpi": {
             "rows_original": _kpi_payload(
-                total_rows, 1.0, 1.0, 1.0 if total_rows > 0 else 0.0
+                total_rows,
+                confidence=1.0,
+                signal_strength=1.0,
+                data_coverage=1.0 if total_rows else 0.0,
             ),
             "rows_after_cleaning": _kpi_payload(
                 rows_after_cleaning,
-                1.0,
-                1.0,
-                1.0 if total_rows > 0 else 0.0,
+                confidence=1.0,
+                signal_strength=1.0,
+                data_coverage=1.0 if total_rows else 0.0,
             ),
             "columns": _kpi_payload(
                 int(df.shape[1]),
-                1.0,
-                1.0,
-                1.0 if total_rows > 0 else 0.0,
+                confidence=1.0,
+                signal_strength=1.0,
+                data_coverage=1.0 if total_rows else 0.0,
             ),
             "duplicate_rows_removed": _kpi_payload(
                 duplicate_rows,
-                dedupe_ratio,
-                1.0 - dedupe_ratio,
-                1.0 if total_rows > 0 else 0.0,
+                confidence=dedupe_ratio,
+                signal_strength=1.0 - dedupe_ratio,
+                data_coverage=1.0 if total_rows else 0.0,
             ),
             "null_ratio_by_column": {
                 col: _kpi_payload(
                     ratio,
-                    ratio,
-                    1.0 - ratio,
-                    1.0 if total_rows > 0 else 0.0,
+                    confidence=ratio,
+                    signal_strength=1.0 - ratio,
+                    data_coverage=1.0 if total_rows else 0.0,
                 )
                 for col, ratio in null_ratio.items()
             },
