@@ -1,5 +1,4 @@
 import pandas as pd
-
 from sreejita.core.validator import DataQualityValidator
 
 
