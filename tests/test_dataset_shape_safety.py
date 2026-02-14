@@ -4,7 +4,6 @@ from sreejita.core.dataset_shape import DatasetShape, detect_dataset_shape
 
 REQUIRED = {"value", "confidence", "signal_strength", "data_coverage"}
 
-
 def test_invalid_input_returns_safe_kpi_payload():
     """Before fix: output had no standardized KPI payload fields."""
     out = detect_dataset_shape(None)
