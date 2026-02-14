@@ -23,9 +23,10 @@ def _safe_div(
     """
     Safe division helper.
 
-    Guarantees:
+    GUARANTEES:
     - Never raises
     - Returns None on invalid input
+    - Explicit float coercion
     - Used across KPI, insight, and visual layers
     """
     try:
@@ -41,11 +42,11 @@ def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
     Customer Value & Loyalty time detector.
 
     PURPOSE:
-    - Identify lifecycle or recency timestamps
-    - Enable tenure / value aging / trend analysis
+    - Identify lifecycle, tenure, and recency timestamps
+    - Enable value aging, cohorting, and trend analysis
 
-    Explicitly NOT:
-    - Experience events
+    EXPLICITLY NOT:
+    - Experience events (Customer domain)
     - Support events
     - Marketing touchpoints
     """
@@ -74,23 +75,38 @@ def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
                     continue
                 pd.to_datetime(sample, errors="raise")
                 return col
-            except Exception:
+            except (ValueError, TypeError):
                 continue
 
     return None
 
-def _resolve_any(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+
+def _resolve_any(
+    df: pd.DataFrame,
+    candidates: List[str],
+) -> Optional[str]:
     """
     Domain-scoped resolver for customer value signals.
 
-    Matches on:
-    - snake_case
-    - camelCase
-    - partial semantic tokens
+    MATCHING RULES:
+    - Exact snake_case match
+    - Partial semantic token match
+    - Case-insensitive
+    - Whitespace-insensitive
 
-    Does NOT fabricate meaning.
+    GUARANTEES:
+    - Never fabricates meaning
+    - Never mutates df
+    - Returns first safe match only
     """
-    cols = {c.lower().replace(" ", "_"): c for c in df.columns}
+
+    if df is None or df.empty:
+        return None
+
+    cols = {
+        str(c).lower().replace(" ", "_"): c
+        for c in df.columns
+    }
 
     for key in candidates:
         key_l = key.lower()
@@ -99,7 +115,9 @@ def _resolve_any(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
                 return original
             if key_l in norm:
                 return original
+
     return None
+
 
 # =====================================================
 # CUSTOMER VALUE & LOYALTY DOMAIN
@@ -161,50 +179,60 @@ class CustomerValueDomain(BaseDomain):
             "clv": (
                 resolve_column(df, "clv")
                 or resolve_column(df, "customer_lifetime_value")
-                or _resolve_any(df, [
-                    "clv_value",
-                    "lifetime_value",
-                    "lifetime_revenue",
-                    "customer_value",
-                ])
+                or _resolve_any(
+                    df,
+                    [
+                        "clv_value",
+                        "lifetime_value",
+                        "lifetime_revenue",
+                        "customer_value",
+                    ],
+                )
             ),
-            
+
             "total_spend": (
                 resolve_column(df, "total_spend")
                 or resolve_column(df, "totalspend")
                 or resolve_column(df, "spend")
                 or resolve_column(df, "lifetime_spend")
                 or resolve_column(df, "sales_amount")
-                or _resolve_any(df, [
-                    "total_revenue",
-                    "lifetime_revenue",
-                    "customer_revenue",
-                    "revenue_total",
-                ])
+                or _resolve_any(
+                    df,
+                    [
+                        "total_revenue",
+                        "lifetime_revenue",
+                        "customer_revenue",
+                        "revenue_total",
+                    ],
+                )
             ),
 
             "total_purchases": (
                 resolve_column(df, "total_purchases")
                 or resolve_column(df, "purchase_count")
-                or resolve_column(df, "annualfrequency")
+                or resolve_column(df, "annual_frequency")
                 or resolve_column(df, "purchase_frequency")
                 or resolve_column(df, "order_count")
-                or resolve_column(df, "annual_frequency")   # ✅ ADD
-                or _resolve_any(df, ["frequency", "orders_per_year"])
+                or _resolve_any(
+                    df,
+                    ["frequency", "orders_per_year"],
+                )
             ),
-
 
             # ---------------- LOYALTY & TENURE ----------------
             "tenure": (
                 resolve_column(df, "tenure")
-                or resolve_column(df, "tenureyears")
                 or resolve_column(df, "tenure_years")
-                or _resolve_any(df, [
-                    "customer_tenure",
-                    "years_active",
-                    "years_with_company",
-                    "relationship_years",
-                ])
+                or resolve_column(df, "tenureyears")
+                or _resolve_any(
+                    df,
+                    [
+                        "customer_tenure",
+                        "years_active",
+                        "years_with_company",
+                        "relationship_years",
+                    ],
+                )
             ),
 
             "loyalty_tier": (
@@ -217,21 +245,25 @@ class CustomerValueDomain(BaseDomain):
             # ---------------- RISK & STABILITY ----------------
             "churn_risk": (
                 resolve_column(df, "churn_risk")
-                or resolve_column(df, "churnriskscore")
                 or resolve_column(df, "churn_risk_score")
+                or resolve_column(df, "churnriskscore")
                 or resolve_column(df, "attrition_risk")
-                or _resolve_any(df, [
-                    "churn_probability",
-                    "risk_score",
-                    "retention_risk",
-                ])
+                or _resolve_any(
+                    df,
+                    [
+                        "churn_probability",
+                        "risk_score",
+                        "retention_risk",
+                    ],
+                )
             ),
 
             # ---------------- ENGAGEMENT PROXIES ----------------
             "preferred_channel": (
-                resolve_column(df, "channel")
-                or resolve_column(df, "preferred_channel")
+                resolve_column(df, "preferred_channel")
+                or resolve_column(df, "channel")
             ),
+
             "email_opt_in": (
                 resolve_column(df, "email_opt_in")
                 or resolve_column(df, "opt_in")
@@ -240,11 +272,13 @@ class CustomerValueDomain(BaseDomain):
 
             # ---------------- DEMOGRAPHIC CONTEXT (PROXY ONLY) ----------------
             "age": resolve_column(df, "age"),
-            "city": resolve_column(df, "city"),
+
             "income": (
                 resolve_column(df, "annual_income")
                 or resolve_column(df, "income")
             ),
+
+            "city": resolve_column(df, "city"),
 
             "referrals": (
                 resolve_column(df, "referrals")
@@ -252,10 +286,9 @@ class CustomerValueDomain(BaseDomain):
             ),
 
             "recency_days": (
-                resolve_column(df, "days_since_last_purchase")
-                or resolve_column(df, "recency_days")
+                resolve_column(df, "recency_days")
+                or resolve_column(df, "days_since_last_purchase")
                 or resolve_column(df, "dayssincelastpurchase")
-                or resolve_column(df, "recencydays")
             ),
         }
 
@@ -292,43 +325,46 @@ class CustomerValueDomain(BaseDomain):
         if opt_col and opt_col in df.columns:
             s = df[opt_col]
             if s.dtype == object:
-                s = s.astype(str).str.lower().map({
-                    "yes": 1, "true": 1, "1": 1,
-                    "no": 0, "false": 0, "0": 0,
-                })
+                s = s.astype(str).str.lower().map(
+                    {
+                        "yes": 1,
+                        "true": 1,
+                        "1": 1,
+                        "no": 0,
+                        "false": 0,
+                        "0": 0,
+                    }
+                )
             df[opt_col] = pd.to_numeric(s, errors="coerce").clip(0, 1)
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # DATA COMPLETENESS — ANALYTIC SIGNALS ONLY
-        # (ROBUST TO camelCase / PascalCase)
-        # ---------------------------------------------
+        # -------------------------------------------------
         analytic_signal_keys = {
-            "clv": ["clv", "customer_lifetime_value"],
-            "total_spend": ["total_spend", "totalspend", "total_spend", "lifetime_spend"],
-            "total_purchases": ["total_purchases", "annualfrequency", "purchase_count"],
-            "tenure": ["tenure", "tenureyears", "tenure_years"],
-            "churn_risk": ["churn_risk", "churnriskscore", "churn_risk_score"],
-            "recency_days": ["recency_days", "dayssincelastpurchase", "days_since_last_purchase"],
+            "clv",
+            "total_spend",
+            "total_purchases",
+            "tenure",
+            "churn_risk",
+            "recency_days",
         }
-        
-        present = 0
-        
-        for key, candidates in analytic_signal_keys.items():
-            col = (
-                self.cols.get(key)
-                or _resolve_any(df, candidates)
-            )
-            if col and col in df.columns and df[col].notna().any():
-                present += 1
-        
+
+        present = sum(
+            1
+            for k in analytic_signal_keys
+            if self.cols.get(k)
+            and self.cols[k] in df.columns
+            and df[self.cols[k]].notna().any()
+        )
+
         self.data_completeness = round(
             present / max(len(analytic_signal_keys), 1),
             2,
         )
-        
+
         return df
 
-     # -------------------------------------------------
+    # -------------------------------------------------
     # SAFE RUN WRAPPER (STABLE OUTPUT CONTRACT)
     # -------------------------------------------------
     def run(
@@ -337,13 +373,6 @@ class CustomerValueDomain(BaseDomain):
         *,
         visual_output_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
-        """
-        Execute the customer_value pipeline with stable, safe outputs.
-
-        Guarantees:
-        - Returns a fixed output schema even on weak data
-        - No exceptions escape the method
-        """
 
         result: Dict[str, Any] = {
             "domain": self.name,
@@ -359,6 +388,7 @@ class CustomerValueDomain(BaseDomain):
 
             df = df.copy(deep=False)
             df = self.preprocess(df)
+
             if df is None or df.empty:
                 return result
 
@@ -366,8 +396,7 @@ class CustomerValueDomain(BaseDomain):
             if not isinstance(kpis, dict):
                 kpis = {}
 
-            if kpis and "_confidence" not in kpis:
-                kpis["_confidence"] = {}
+            kpis.setdefault("_confidence", {})
 
             self._last_kpis = kpis
 
@@ -381,15 +410,11 @@ class CustomerValueDomain(BaseDomain):
                 try:
                     visuals = self.generate_visuals(df, visual_output_dir)
                     visuals = self.ensure_minimum_visuals(
-                        visuals,
-                        df,
-                        visual_output_dir,
+                        visuals, df, visual_output_dir
                     )
                 except Exception:
                     visuals = self.ensure_minimum_visuals(
-                        [],
-                        df,
-                        visual_output_dir,
+                        [], df, visual_output_dir
                     )
 
             result.update(
@@ -400,25 +425,26 @@ class CustomerValueDomain(BaseDomain):
                     "recommendations": recommendations,
                 }
             )
+
         except Exception:
             return result
 
         return result
 
+
     # -------------------------------------------------
     # KPI ENGINE — CUSTOMER VALUE & LOYALTY
     # -------------------------------------------------
-    
     def calculate_kpis(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
         Customer Value & Loyalty KPI Engine (v1.0)
     
         GUARANTEES:
         - Capability-driven sub-domains
-        - 5–9 KPIs per sub-domain (when data allows)
-        - Proxy-aware metrics only (no fabrication)
-        - Confidence-tagged KPIs
-        - Graceful degradation on weak data
+        - No fabricated metrics
+        - Proxy metrics explicitly flagged
+        - Confidence degrades under weak data
+        - Deterministic, auditable outputs
         """
     
         # -------------------------------------------------
@@ -454,17 +480,7 @@ class CustomerValueDomain(BaseDomain):
             "_proxy_metrics": [],
         }
     
-        # -------------------------------------------------
-        # PROMOTE DATA COMPLETENESS AS FIRST-CLASS KPI SIGNAL
-        # -------------------------------------------------
         completeness = kpis["data_completeness"]
-    
-        if completeness >= 0.4:
-            kpis["_confidence"]["data_completeness"] = 0.85
-        elif completeness >= 0.25:
-            kpis["_confidence"]["data_completeness"] = 0.70
-        else:
-            kpis["_confidence"]["data_completeness"] = 0.50
     
         # -------------------------------------------------
         # SAFE HELPERS
@@ -486,36 +502,38 @@ class CustomerValueDomain(BaseDomain):
                 return None
             return int(df[col].nunique())
     
-        def can_derive_total_purchases():
-            if not c.get("customer"):
-                return False
-            return df[c["customer"]].duplicated().any()
-    
         # =================================================
         # VALUE — ECONOMIC CONTRIBUTION
         # =================================================
         value = []
     
         if c.get("clv"):
-            kpis["value_avg_clv"] = safe_mean(c["clv"])
-            value.append("value_avg_clv")
+            mean_clv = safe_mean(c["clv"])
+            if mean_clv is not None:
+                kpis["value_avg_clv"] = mean_clv
+                value.append("value_avg_clv")
     
-            kpis["value_clv_dispersion"] = _safe_div(
-                df[c["clv"]].std(),
-                df[c["clv"]].mean(),
-            )
-            value.append("value_clv_dispersion")
+                std = df[c["clv"]].std()
+                if std and mean_clv:
+                    kpis["value_clv_dispersion"] = _safe_div(std, mean_clv)
+                    value.append("value_clv_dispersion")
     
         if c.get("total_spend"):
-            kpis["value_total_spend"] = safe_sum(c["total_spend"])
-            value.append("value_total_spend")
+            total_spend = safe_sum(c["total_spend"])
+            if total_spend is not None:
+                kpis["value_total_spend"] = total_spend
+                value.append("value_total_spend")
     
-            kpis["value_avg_spend"] = safe_mean(c["total_spend"])
-            value.append("value_avg_spend")
+            avg_spend = safe_mean(c["total_spend"])
+            if avg_spend is not None:
+                kpis["value_avg_spend"] = avg_spend
+                value.append("value_avg_spend")
     
         if c.get("total_purchases"):
-            kpis["value_avg_purchase_count"] = safe_mean(c["total_purchases"])
-            value.append("value_avg_purchase_count")
+            avg_purchases = safe_mean(c["total_purchases"])
+            if avg_purchases is not None:
+                kpis["value_avg_purchase_count"] = avg_purchases
+                value.append("value_avg_purchase_count")
     
         # =================================================
         # LOYALTY — TENURE & CONTINUITY
@@ -523,51 +541,41 @@ class CustomerValueDomain(BaseDomain):
         loyalty = []
     
         if c.get("tenure"):
-            kpis["loyalty_avg_tenure"] = safe_mean(c["tenure"])
-            loyalty.append("loyalty_avg_tenure")
+            avg_tenure = safe_mean(c["tenure"])
+            if avg_tenure is not None:
+                kpis["loyalty_avg_tenure"] = avg_tenure
+                loyalty.append("loyalty_avg_tenure")
     
-            kpis["loyalty_tenure_dispersion"] = _safe_div(
-                df[c["tenure"]].std(),
-                df[c["tenure"]].mean(),
-            )
-            loyalty.append("loyalty_tenure_dispersion")
-
-        # ---------------- LOYALTY CONTINUITY ----------------
-        if c.get("tenure"):
+            std = df[c["tenure"]].std()
+            if std and avg_tenure:
+                kpis["loyalty_tenure_dispersion"] = _safe_div(std, avg_tenure)
+                loyalty.append("loyalty_tenure_dispersion")
+    
             s = df[c["tenure"]].dropna()
-            kpis["loyalty_tenure_skew"] = float(s.skew()) if len(s) > 10 else None
-            loyalty.append("loyalty_tenure_skew")
-        
+            if len(s) >= 30:
+                kpis["loyalty_tenure_skew"] = float(s.skew())
+                loyalty.append("loyalty_tenure_skew")
+    
         if c.get("tenure") and c.get("total_purchases"):
             corr = df[[c["tenure"], c["total_purchases"]]].corr().iloc[0, 1]
-            kpis["loyalty_tenure_purchase_alignment"] = corr
-            loyalty.append("loyalty_tenure_purchase_alignment")
-
+            if not pd.isna(corr):
+                kpis["loyalty_tenure_purchase_alignment"] = float(corr)
+                loyalty.append("loyalty_tenure_purchase_alignment")
+    
         if c.get("loyalty_tier"):
-            kpis["loyalty_tier_count"] = safe_nunique(c["loyalty_tier"])
-            loyalty.append("loyalty_tier_count")
+            cnt = safe_nunique(c["loyalty_tier"])
+            if cnt is not None:
+                kpis["loyalty_tier_count"] = cnt
+                loyalty.append("loyalty_tier_count")
     
-        if c.get("customer") and c.get("total_purchases"):
+        if c.get("total_purchases"):
             freq = df[c["total_purchases"]]
-            kpis["loyalty_repeat_customer_rate"] = _safe_div(
-                (freq > 1).sum(),
-                freq.notna().sum(),
-            )
-            loyalty.append("loyalty_repeat_customer_rate")
-    
-        # ---------------- PROXY: TOTAL PURCHASES ----------------
-        if not c.get("total_purchases") and can_derive_total_purchases():
-            purchase_counts = (
-                df.groupby(c["customer"])
-                .size()
-                .rename("proxy_total_purchases")
-            )
-    
-            avg_purchases = purchase_counts.mean()
-    
-            kpis["loyalty_avg_purchase_count"] = float(avg_purchases)
-            loyalty.append("loyalty_avg_purchase_count")
-            kpis["_proxy_metrics"].append("loyalty_avg_purchase_count")
+            if freq.notna().any():
+                kpis["loyalty_repeat_customer_rate"] = _safe_div(
+                    (freq > 1).sum(),
+                    freq.notna().sum(),
+                )
+                loyalty.append("loyalty_repeat_customer_rate")
     
         # =================================================
         # RISK — CHURN & STABILITY
@@ -575,46 +583,49 @@ class CustomerValueDomain(BaseDomain):
         risk = []
     
         if c.get("churn_risk"):
-            kpis["risk_avg_churn_risk"] = safe_mean(c["churn_risk"])
-            risk.append("risk_avg_churn_risk")
+            avg_risk = safe_mean(c["churn_risk"])
+            if avg_risk is not None:
+                kpis["risk_avg_churn_risk"] = avg_risk
+                risk.append("risk_avg_churn_risk")
     
-            kpis["risk_churn_risk_dispersion"] = _safe_div(
-                df[c["churn_risk"]].std(),
-                df[c["churn_risk"]].mean(),
-            )
-            risk.append("risk_churn_risk_dispersion")
+            std = df[c["churn_risk"]].std()
+            if std and avg_risk:
+                kpis["risk_churn_risk_dispersion"] = _safe_div(std, avg_risk)
+                risk.append("risk_churn_risk_dispersion")
+    
+            s = df[c["churn_risk"]].dropna()
+            if len(s) >= 30:
+                kpis["risk_churn_skew"] = float(s.skew())
+                risk.append("risk_churn_skew")
     
         if c.get("tenure") and c.get("churn_risk"):
             corr = df[[c["tenure"], c["churn_risk"]]].corr().iloc[0, 1]
-            kpis["risk_tenure_churn_alignment"] = _safe_div(corr, 1)
-            risk.append("risk_tenure_churn_alignment")
-
-        # ---------------- RISK SHAPE ----------------
-        if c.get("churn_risk"):
-            s = df[c["churn_risk"]].dropna()
-        
-            # asymmetry of risk distribution (no threshold)
-            kpis["risk_churn_skew"] = float(s.skew()) if len(s) > 10 else None
-            risk.append("risk_churn_skew")
-        
-        # ---------------- RISK RECENCY ALIGNMENT ----------------
+            if not pd.isna(corr):
+                kpis["risk_tenure_churn_alignment"] = float(corr)
+                risk.append("risk_tenure_churn_alignment")
+    
         if c.get("churn_risk") and c.get("recency_days"):
             corr = df[[c["churn_risk"], c["recency_days"]]].corr().iloc[0, 1]
-            kpis["risk_recency_alignment"] = corr
-            risk.append("risk_recency_alignment")
-
+            if not pd.isna(corr):
+                kpis["risk_recency_alignment"] = float(corr)
+                risk.append("risk_recency_alignment")
+    
         # =================================================
         # ENGAGEMENT — PROXY SIGNALS
         # =================================================
         engagement = []
     
         if c.get("preferred_channel"):
-            kpis["engagement_channel_count"] = safe_nunique(c["preferred_channel"])
-            engagement.append("engagement_channel_count")
+            cnt = safe_nunique(c["preferred_channel"])
+            if cnt is not None:
+                kpis["engagement_channel_count"] = cnt
+                engagement.append("engagement_channel_count")
     
         if c.get("email_opt_in"):
-            kpis["engagement_email_opt_in_rate"] = safe_mean(c["email_opt_in"])
-            engagement.append("engagement_email_opt_in_rate")
+            rate = safe_mean(c["email_opt_in"])
+            if rate is not None:
+                kpis["engagement_email_opt_in_rate"] = rate
+                engagement.append("engagement_email_opt_in_rate")
     
         # =================================================
         # CONCENTRATION — DEPENDENCY & SKEW
@@ -622,22 +633,24 @@ class CustomerValueDomain(BaseDomain):
         concentration = []
     
         if c.get("clv"):
-            sorted_vals = df[c["clv"]].dropna().sort_values(ascending=False)
-            top_20 = int(max(1, len(sorted_vals) * 0.2))
-            kpis["concentration_top_20pct_value_share"] = _safe_div(
-                sorted_vals.head(top_20).sum(),
-                sorted_vals.sum(),
-            )
-            concentration.append("concentration_top_20pct_value_share")
+            s = df[c["clv"]].dropna()
+            if len(s) >= 30:
+                top_20 = int(max(1, len(s) * 0.2))
+                kpis["concentration_top_20pct_value_share"] = _safe_div(
+                    s.sort_values(ascending=False).head(top_20).sum(),
+                    s.sum(),
+                )
+                concentration.append("concentration_top_20pct_value_share")
     
         if c.get("total_spend"):
-            sorted_spend = df[c["total_spend"]].dropna().sort_values(ascending=False)
-            top_10 = int(max(1, len(sorted_spend) * 0.1))
-            kpis["concentration_top_10pct_spend_share"] = _safe_div(
-                sorted_spend.head(top_10).sum(),
-                sorted_spend.sum(),
-            )
-            concentration.append("concentration_top_10pct_spend_share")
+            s = df[c["total_spend"]].dropna()
+            if len(s) >= 30:
+                top_10 = int(max(1, len(s) * 0.1))
+                kpis["concentration_top_10pct_spend_share"] = _safe_div(
+                    s.sort_values(ascending=False).head(top_10).sum(),
+                    s.sum(),
+                )
+                concentration.append("concentration_top_10pct_spend_share")
     
         # -------------------------------------------------
         # DOMAIN → KPI MAP
@@ -651,12 +664,7 @@ class CustomerValueDomain(BaseDomain):
         }
     
         # -------------------------------------------------
-        # DOMAIN DATA STRENGTH FLAG (VISUAL & READINESS GATE)
-        # -------------------------------------------------
-        kpis["_domain_has_strong_data"] = completeness >= 0.4
-    
-        # -------------------------------------------------
-        # KPI CONFIDENCE (MANDATORY)
+        # KPI CONFIDENCE (STRICT, NON-INFLATING)
         # -------------------------------------------------
         for key, val in kpis.items():
             if key.startswith("_") or not isinstance(val, (int, float)):
@@ -667,22 +675,23 @@ class CustomerValueDomain(BaseDomain):
             if volume < 100:
                 base -= 0.15
     
-            if "dispersion" in key or "share" in key:
-                base += 0.05
-    
-            if key in kpis.get("_proxy_metrics", []):
+            if key in kpis["_proxy_metrics"]:
                 base -= 0.15
     
-            if "alignment" in key:
+            if "alignment" in key or "skew" in key:
                 base -= 0.05
     
+            if completeness < 0.4:
+                base -= 0.10
+    
             kpis["_confidence"][key] = round(
-                max(0.4, min(0.9, base)),
+                max(0.4, min(0.85, base)),
                 2,
             )
     
         self._last_kpis = kpis
         return kpis
+    
 
     # -------------------------------------------------
     # VISUAL ENGINE — CUSTOMER VALUE & LOYALTY
@@ -698,11 +707,10 @@ class CustomerValueDomain(BaseDomain):
     
         GUARANTEES:
         - Evidence-only visuals
-        - Column-driven (no KPI bookkeeping gates)
-        - Flat-plot prevention
+        - Column-driven (no KPI gating)
+        - Flat-plot & low-sample prevention
         - No judgement, no thresholds
-        - No trimming (report layer responsibility)
-        - Deterministic file output
+        - Deterministic output
         """
     
         visuals: List[Dict[str, Any]] = []
@@ -711,13 +719,17 @@ class CustomerValueDomain(BaseDomain):
         c = self.cols
     
         # -------------------------------------------------
-        # KPI SOURCE OF TRUTH (STATELESS)
+        # KPI SOURCE OF TRUTH (STATELESS, SAFE)
         # -------------------------------------------------
-        kpis = self.calculate_kpis(df)
+        kpis = getattr(self, "_last_kpis", None)
+        if not isinstance(kpis, dict):
+            kpis = self.calculate_kpis(df)
+            self._last_kpis = kpis
+    
         record_count = int(kpis.get("record_count", len(df)))
     
         # -------------------------------------------------
-        # VISUAL CONFIDENCE (DATA-DRIVEN ONLY)
+        # VISUAL CONFIDENCE (DATA VOLUME ONLY)
         # -------------------------------------------------
         if record_count >= 5000:
             visual_conf = 0.85
@@ -747,173 +759,135 @@ class CustomerValueDomain(BaseDomain):
         # =================================================
         # VALUE — ECONOMIC DISTRIBUTIONS
         # =================================================
-        if c.get("clv") and df[c["clv"]].nunique(dropna=True) > 3:
-            fig, ax = plt.subplots()
-            df[c["clv"]].dropna().hist(ax=ax, bins=20)
-            ax.set_title("Customer Lifetime Value Distribution")
-            save(
-                fig, "value_clv_dist.png",
-                "Distribution of customer lifetime value",
-                0.95, "value", "monetization", "distribution"
-            )
+        if c.get("clv"):
+            s = df[c["clv"]].dropna()
+            if s.nunique() > 5 and len(s) >= 30:
+                fig, ax = plt.subplots()
+                s.hist(ax=ax, bins=20)
+                ax.set_title("Customer Lifetime Value Distribution")
+                save(fig, "value_clv_dist.png",
+                     "Distribution of customer lifetime value",
+                     0.95, "value", "monetization", "distribution")
     
-            fig, ax = plt.subplots()
-            df[c["clv"]].dropna().plot(kind="box", ax=ax)
-            ax.set_title("CLV Spread")
-            save(
-                fig, "value_clv_box.png",
-                "Variability in customer lifetime value",
-                0.90, "value", "monetization", "spread"
-            )
+                fig, ax = plt.subplots()
+                s.plot(kind="box", ax=ax)
+                ax.set_title("CLV Spread")
+                save(fig, "value_clv_box.png",
+                     "Variability in customer lifetime value",
+                     0.90, "value", "monetization", "spread")
     
-        if c.get("total_spend") and df[c["total_spend"]].nunique(dropna=True) > 3:
-            fig, ax = plt.subplots()
-            df[c["total_spend"]].dropna().hist(ax=ax, bins=20)
-            ax.set_title("Total Spend Distribution")
-            save(
-                fig, "value_spend_dist.png",
-                "Distribution of customer total spend",
-                0.90, "value", "monetization", "distribution"
-            )
+        if c.get("total_spend"):
+            s = df[c["total_spend"]].dropna()
+            if s.nunique() > 5 and len(s) >= 30:
+                fig, ax = plt.subplots()
+                s.hist(ax=ax, bins=20)
+                ax.set_title("Total Spend Distribution")
+                save(fig, "value_spend_dist.png",
+                     "Distribution of customer total spend",
+                     0.90, "value", "monetization", "distribution")
     
         # =================================================
         # LOYALTY — TENURE & CONTINUITY
         # =================================================
-        if c.get("tenure") and df[c["tenure"]].nunique(dropna=True) > 3:
-            fig, ax = plt.subplots()
-            df[c["tenure"]].dropna().hist(ax=ax, bins=15)
-            ax.set_title("Customer Tenure Distribution")
-            save(
-                fig, "loyalty_tenure_dist.png",
-                "Customer tenure spread",
-                0.90, "loyalty", "stability", "distribution"
-            )
+        if c.get("tenure"):
+            s = df[c["tenure"]].dropna()
+            if s.nunique() > 5 and len(s) >= 30:
+                fig, ax = plt.subplots()
+                s.hist(ax=ax, bins=15)
+                ax.set_title("Customer Tenure Distribution")
+                save(fig, "loyalty_tenure_dist.png",
+                     "Customer tenure spread",
+                     0.90, "loyalty", "stability", "distribution")
     
-            fig, ax = plt.subplots()
-            df[c["tenure"]].dropna().plot(kind="box", ax=ax)
-            ax.set_title("Tenure Variability")
-            save(
-                fig, "loyalty_tenure_box.png",
-                "Variability in customer tenure",
-                0.85, "loyalty", "stability", "spread"
-            )
-
-        if c.get("tenure") and df[c["tenure"]].nunique() > 5:
-            fig, ax = plt.subplots()
-            df[c["tenure"]].dropna().plot(kind="density", ax=ax)
-            ax.set_title("Customer Tenure Density")
-            save(
-                fig,
-                "loyalty_tenure_density.png",
-                "Density profile of customer tenure",
-                0.93,
-                "loyalty",
-                "continuity",
-                "distribution",
-            )
-
+                fig, ax = plt.subplots()
+                s.plot(kind="box", ax=ax)
+                ax.set_title("Tenure Variability")
+                save(fig, "loyalty_tenure_box.png",
+                     "Variability in customer tenure",
+                     0.85, "loyalty", "stability", "spread")
+    
+                fig, ax = plt.subplots()
+                s.plot(kind="density", ax=ax)
+                ax.set_title("Customer Tenure Density")
+                save(fig, "loyalty_tenure_density.png",
+                     "Density profile of customer tenure",
+                     0.93, "loyalty", "continuity", "distribution")
+    
         if c.get("tenure") and c.get("total_purchases"):
             x = df[c["tenure"]]
             y = df[c["total_purchases"]]
-        
-            if x.notna().sum() > 20 and y.notna().sum() > 20:
+            if x.notna().sum() >= 30 and y.notna().sum() >= 30:
                 fig, ax = plt.subplots()
                 ax.scatter(x, y, alpha=0.4)
-                ax.set_xlabel("Tenure (Years)")
-                ax.set_ylabel("Purchase Frequency")
+                ax.set_xlabel("Tenure")
+                ax.set_ylabel("Purchase Count")
                 ax.set_title("Tenure vs Purchase Frequency")
-                save(
-                    fig,
-                    "loyalty_tenure_vs_frequency.png",
-                    "Relationship between customer tenure and purchase activity",
-                    0.92,
-                    "loyalty",
-                    "continuity",
-                    "relationship",
-                )
-
+                save(fig, "loyalty_tenure_vs_frequency.png",
+                     "Relationship between customer tenure and purchase activity",
+                     0.92, "loyalty", "continuity", "relationship")
+    
         if c.get("loyalty_tier"):
             counts = df[c["loyalty_tier"]].value_counts()
             if len(counts) > 1:
                 fig, ax = plt.subplots()
                 counts.plot.bar(ax=ax)
                 ax.set_title("Loyalty Tier Mix")
-                save(
-                    fig, "loyalty_tier_mix.png",
-                    "Distribution of customers across loyalty tiers",
-                    0.80, "loyalty", "structure", "composition"
-                )
+                save(fig, "loyalty_tier_mix.png",
+                     "Distribution of customers across loyalty tiers",
+                     0.80, "loyalty", "structure", "composition")
     
         # =================================================
         # RISK — CHURN RISK STRUCTURE
         # =================================================
-        if c.get("churn_risk") and df[c["churn_risk"]].nunique(dropna=True) > 3:
-            fig, ax = plt.subplots()
-            df[c["churn_risk"]].dropna().hist(ax=ax, bins=15)
-            ax.set_title("Churn Risk Score Distribution")
-            save(
-                fig, "risk_churn_dist.png",
-                "Distribution of churn risk scores",
-                0.90, "risk", "stability", "distribution"
-            )
+        if c.get("churn_risk"):
+            s = df[c["churn_risk"]].dropna()
+            if s.nunique() > 5 and len(s) >= 30:
+                fig, ax = plt.subplots()
+                s.hist(ax=ax, bins=15)
+                ax.set_title("Churn Risk Score Distribution")
+                save(fig, "risk_churn_dist.png",
+                     "Distribution of churn risk scores",
+                     0.90, "risk", "stability", "distribution")
     
-            fig, ax = plt.subplots()
-            df[c["churn_risk"]].dropna().plot(kind="box", ax=ax)
-            ax.set_title("Churn Risk Spread")
-            save(
-                fig, "risk_churn_box.png",
-                "Variability in churn risk",
-                0.85, "risk", "stability", "spread"
-            )
-
-        if c.get("churn_risk") and df[c["churn_risk"]].nunique() > 5:
-            fig, ax = plt.subplots()
-            df[c["churn_risk"]].dropna().plot(kind="density", ax=ax)
-            ax.set_title("Churn Risk Density")
-            save(
-                fig,
-                "risk_churn_density.png",
-                "Density profile of customer churn risk",
-                0.92,
-                "risk",
-                "stability",
-                "distribution",
-            )
-
+                fig, ax = plt.subplots()
+                s.plot(kind="box", ax=ax)
+                ax.set_title("Churn Risk Spread")
+                save(fig, "risk_churn_box.png",
+                     "Variability in churn risk",
+                     0.85, "risk", "stability", "spread")
+    
+                fig, ax = plt.subplots()
+                s.plot(kind="density", ax=ax)
+                ax.set_title("Churn Risk Density")
+                save(fig, "risk_churn_density.png",
+                     "Density profile of customer churn risk",
+                     0.92, "risk", "stability", "distribution")
+    
         if c.get("recency_days") and c.get("churn_risk"):
             x = df[c["recency_days"]]
             y = df[c["churn_risk"]]
-        
-            if x.notna().sum() > 20 and y.notna().sum() > 20:
+            if x.notna().sum() >= 30 and y.notna().sum() >= 30:
                 fig, ax = plt.subplots()
                 ax.scatter(x, y, alpha=0.4)
                 ax.set_xlabel("Days Since Last Purchase")
                 ax.set_ylabel("Churn Risk")
                 ax.set_title("Recency vs Churn Risk")
-                save(
-                    fig,
-                    "risk_recency_vs_churn.png",
-                    "Relationship between inactivity and churn risk",
-                    0.90,
-                    "risk",
-                    "early_warning",
-                    "relationship",
-                )
-
+                save(fig, "risk_recency_vs_churn.png",
+                     "Relationship between inactivity and churn risk",
+                     0.90, "risk", "early_warning", "relationship")
+    
         if c.get("tenure") and c.get("churn_risk"):
             x = df[c["tenure"]]
             y = df[c["churn_risk"]]
-            if x.notna().sum() > 5 and y.notna().sum() > 5:
+            if x.notna().sum() >= 30 and y.notna().sum() >= 30:
                 fig, ax = plt.subplots()
                 ax.scatter(x, y, alpha=0.5)
                 ax.set_xlabel("Tenure")
                 ax.set_ylabel("Churn Risk")
                 ax.set_title("Tenure vs Churn Risk")
-                save(
-                    fig, "risk_tenure_vs_churn.png",
-                    "Relationship between tenure and churn risk",
-                    0.85, "risk", "relationship", "correlation"
-                )
+                save(fig, "risk_tenure_vs_churn.png",
+                     "Relationship between tenure and churn risk",
+                     0.85, "risk", "relationship", "correlation")
     
         # =================================================
         # ENGAGEMENT — PROXY SIGNALS
@@ -924,11 +898,9 @@ class CustomerValueDomain(BaseDomain):
                 fig, ax = plt.subplots()
                 counts.plot.bar(ax=ax)
                 ax.set_title("Preferred Channel Distribution")
-                save(
-                    fig, "engagement_channel_mix.png",
-                    "Customer preferred channel mix",
-                    0.75, "engagement", "preference", "composition"
-                )
+                save(fig, "engagement_channel_mix.png",
+                     "Customer preferred channel mix",
+                     0.75, "engagement", "preference", "composition")
     
         if c.get("email_opt_in"):
             counts = df[c["email_opt_in"]].value_counts().sort_index()
@@ -936,46 +908,38 @@ class CustomerValueDomain(BaseDomain):
                 fig, ax = plt.subplots()
                 counts.plot.bar(ax=ax)
                 ax.set_title("Email Opt-In Distribution")
-                save(
-                    fig, "engagement_email_optin.png",
-                    "Email communication opt-in status",
-                    0.70, "engagement", "access", "composition"
-                )
+                save(fig, "engagement_email_optin.png",
+                     "Email communication opt-in status",
+                     0.70, "engagement", "access", "composition")
     
         # =================================================
         # CONCENTRATION — DEPENDENCY & SKEW
         # =================================================
-        if c.get("clv") and df[c["clv"]].nunique(dropna=True) > 5:
+        if c.get("clv"):
             vals = df[c["clv"]].dropna().sort_values(ascending=False)
-            if vals.sum() > 0:
+            if len(vals) >= 30 and vals.sum() > 0:
                 cumulative = vals.cumsum() / vals.sum()
                 fig, ax = plt.subplots()
                 cumulative.reset_index(drop=True).plot(ax=ax)
                 ax.set_title("Cumulative CLV Concentration Curve")
-                save(
-                    fig, "concentration_clv_curve.png",
-                    "Cumulative contribution of top customers to total value",
-                    0.95, "concentration", "dependency", "cumulative"
-                )
+                save(fig, "concentration_clv_curve.png",
+                     "Cumulative contribution of top customers to total value",
+                     0.95, "concentration", "dependency", "cumulative")
     
-        if c.get("total_spend") and df[c["total_spend"]].nunique(dropna=True) > 5:
+        if c.get("total_spend"):
             vals = df[c["total_spend"]].dropna().sort_values(ascending=False)
-            if vals.sum() > 0:
+            if len(vals) >= 30 and vals.sum() > 0:
                 cumulative = vals.cumsum() / vals.sum()
                 fig, ax = plt.subplots()
                 cumulative.reset_index(drop=True).plot(ax=ax)
                 ax.set_title("Cumulative Spend Concentration Curve")
-                save(
-                    fig, "concentration_spend_curve.png",
-                    "Cumulative spend contribution by customer rank",
-                    0.90, "concentration", "dependency", "cumulative"
-                )
+                save(fig, "concentration_spend_curve.png",
+                     "Cumulative spend contribution by customer rank",
+                     0.90, "concentration", "dependency", "cumulative")
     
-        # -------------------------------------------------
-        # RETURN ALL CANDIDATES (NO TRIMMING)
-        # -------------------------------------------------
         visuals.sort(key=lambda v: v["importance"], reverse=True)
         return visuals
+
 
     # -------------------------------------------------
     # INSIGHT ENGINE — CUSTOMER VALUE & LOYALTY
@@ -1040,25 +1004,25 @@ class CustomerValueDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "value",
                     "title": "Value Distribution Visibility",
-                    "so_what": "Value dispersion highlights differences in contribution across the customer base.",
+                    "so_what": "Observed dispersion highlights differences in contribution across customers.",
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "value",
                     "title": "Average Value Signal",
-                    "so_what": "Average CLV supports comparison across segments and cohorts.",
+                    "so_what": "Average customer value supports comparison across segments and cohorts.",
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "value",
                     "title": "Spend Aggregation Context",
-                    "so_what": "Total spend provides scale context for customer value.",
+                    "so_what": "Total spend provides scale context for customer value interpretation.",
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "value",
                     "title": "Economic Contribution Variability",
-                    "so_what": "Observed variability indicates heterogeneous customer value profiles.",
+                    "so_what": "Variability indicates heterogeneous value profiles within the customer base.",
                 },
                 {
                     "level": "INFO",
@@ -1083,7 +1047,7 @@ class CustomerValueDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "loyalty",
                     "title": "Customer Tenure Baseline Established",
-                    "so_what": "Tenure metrics provide insight into customer relationship longevity.",
+                    "so_what": "Tenure metrics provide insight into relationship longevity.",
                 },
                 {
                     "level": "INFO",
@@ -1122,20 +1086,18 @@ class CustomerValueDomain(BaseDomain):
                     "so_what": "Loyalty metrics are suitable for governance review.",
                 },
             ])
-
-        if (
-            kpis.get("loyalty_tenure_purchase_alignment") is not None
-            and abs(kpis["loyalty_tenure_purchase_alignment"]) > 0.3
-        ):
-            insights.append({
-                "level": "STRATEGIC",
-                "title": "Value Supported by Customer Continuity",
-                "so_what": (
-                    "Customer tenure shows a strong relationship with repeat purchasing, "
-                    "indicating that value is sustained by long-term customer continuity."
-                ),
-            })
-
+    
+            if tenure_churn_align is not None:
+                insights.append({
+                    "level": "STRATEGIC",
+                    "sub_domain": "loyalty",
+                    "title": "Customer Continuity Supports Value Realization",
+                    "so_what": (
+                        "Observed alignment between tenure and purchasing behavior suggests that "
+                        "customer value is sustained through long-term continuity."
+                    ),
+                })
+    
         # =================================================
         # RISK — CHURN & STABILITY
         # =================================================
@@ -1151,13 +1113,13 @@ class CustomerValueDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "risk",
                     "title": "Risk Dispersion Visibility",
-                    "so_what": "Risk variability highlights differences in customer stability profiles.",
+                    "so_what": "Risk variability highlights differences in stability profiles.",
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "risk",
                     "title": "Tenure–Risk Relationship Context",
-                    "so_what": "The relationship between tenure and risk supports lifecycle interpretation.",
+                    "so_what": "Observed relationships support lifecycle-based risk interpretation.",
                 },
                 {
                     "level": "INFO",
@@ -1169,7 +1131,7 @@ class CustomerValueDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "risk",
                     "title": "Risk Signal Coverage",
-                    "so_what": "Available risk signals support customer stability assessment.",
+                    "so_what": "Available signals support customer stability assessment.",
                 },
                 {
                     "level": "INFO",
@@ -1184,20 +1146,18 @@ class CustomerValueDomain(BaseDomain):
                     "so_what": "Risk signals are suitable for executive governance.",
                 },
             ])
-
-        if (
-            kpis.get("risk_recency_alignment") is not None
-            and abs(kpis["risk_recency_alignment"]) > 0.3
-        ):
-            insights.append({
-                "level": "STRATEGIC",
-                "title": "Inactivity-Driven Churn Risk",
-                "so_what": (
-                    "Customer churn risk shows a strong relationship with purchase inactivity, "
-                    "indicating emerging rather than residual risk."
-                ),
-            })
-
+    
+            if kpis.get("risk_recency_alignment") is not None:
+                insights.append({
+                    "level": "STRATEGIC",
+                    "sub_domain": "risk",
+                    "title": "Churn Risk Reflects Customer Inactivity",
+                    "so_what": (
+                        "Observed alignment between inactivity and churn risk suggests that "
+                        "risk is emerging rather than purely residual."
+                    ),
+                })
+    
         # =================================================
         # ENGAGEMENT — PROXY SIGNALS
         # =================================================
@@ -1256,7 +1216,7 @@ class CustomerValueDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "concentration",
                     "title": "Value Concentration Visibility",
-                    "so_what": "Value concentration metrics show how economic contribution is distributed.",
+                    "so_what": "Concentration metrics show how economic contribution is distributed.",
                 },
                 {
                     "level": "INFO",
@@ -1297,7 +1257,7 @@ class CustomerValueDomain(BaseDomain):
             ])
     
         # -------------------------------------------------
-        # ATOMIC FALLBACK (ONLY IF NOTHING ELSE)
+        # ATOMIC FALLBACK
         # -------------------------------------------------
         if not insights:
             insights.append({
@@ -1308,6 +1268,7 @@ class CustomerValueDomain(BaseDomain):
             })
     
         return insights
+
 
     # -------------------------------------------------
     # RECOMMENDATION ENGINE — CUSTOMER VALUE & LOYALTY
@@ -1335,6 +1296,14 @@ class CustomerValueDomain(BaseDomain):
             return recs
     
         sub_domains = kpis.get("sub_domains", {}) or {}
+    
+        # -------------------------------------------------
+        # LIGHT INSIGHT AWARENESS (NON-BRANCHING)
+        # -------------------------------------------------
+        has_strategic_insights = any(
+            isinstance(i, dict) and i.get("level") == "STRATEGIC"
+            for i in (insights or [])
+        )
     
         # =================================================
         # VALUE — ECONOMIC CONTRIBUTION
@@ -1556,12 +1525,17 @@ class CustomerValueDomain(BaseDomain):
                 "priority": "LOW",
             })
     
+        # -------------------------------------------------
+        # DETERMINISTIC ORDERING (EXEC-SAFE)
+        # -------------------------------------------------
+        priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        recs.sort(key=lambda r: priority_order.get(r.get("priority", "LOW"), 2))
+    
         return recs
 
 # =====================================================
 # DOMAIN DETECTOR — CUSTOMER VALUE & LOYALTY
 # =====================================================
-
 class CustomerValueDomainDetector(BaseDomainDetector):
     """
     Customer Value & Loyalty Domain Detector (v1.0)
@@ -1664,7 +1638,9 @@ class CustomerValueDomainDetector(BaseDomainDetector):
         # -------------------------------------------------
         # CORE SIGNAL CHECKS
         # -------------------------------------------------
-        has_customer_id = any("customer" in c or "user" in c for c in cols)
+        has_customer_id = any(
+            "customer" in c or "user" in c for c in cols
+        )
 
         value_hits = [
             c for c in cols
@@ -1686,7 +1662,7 @@ class CustomerValueDomainDetector(BaseDomainDetector):
         # -------------------------------------------------
         confidence = 0.0
 
-        if has_customer_id and value_hits:
+        if has_customer_id and len(value_hits) >= 1:
             confidence = 0.7
 
         if has_customer_id and len(value_hits) >= 2:
@@ -1695,16 +1671,21 @@ class CustomerValueDomainDetector(BaseDomainDetector):
         if has_customer_id and len(value_hits) >= 3:
             confidence = 0.9
 
-        if engagement_hits:
+        # Engagement proxies can SUPPORT but not dominate
+        if engagement_hits and confidence >= 0.7:
             confidence = max(confidence, 0.75)
 
         # -------------------------------------------------
-        # BOUNDARY PENALTIES
+        # BOUNDARY PENALTIES (SCALED & CAPPED)
         # -------------------------------------------------
         if exclusion_hits:
-            confidence -= 0.25
+            penalty = min(0.35, 0.10 * len(exclusion_hits))
+            confidence -= penalty
 
-        confidence = round(max(0.0, min(0.95, confidence)), 2)
+        confidence = round(
+            max(0.0, min(0.95, confidence)),
+            2,
+        )
 
         # -------------------------------------------------
         # FINAL DECISION
@@ -1716,9 +1697,9 @@ class CustomerValueDomainDetector(BaseDomainDetector):
                 {
                     "signals": {
                         "has_customer_id": has_customer_id,
-                        "value_hits": value_hits,
-                        "engagement_hits": engagement_hits,
-                        "excluded": exclusion_hits,
+                        "value_signal_count": len(value_hits),
+                        "engagement_signal_count": len(engagement_hits),
+                        "exclusion_signal_count": len(exclusion_hits),
                     }
                 },
             )
@@ -1730,6 +1711,11 @@ class CustomerValueDomainDetector(BaseDomainDetector):
                 "value_signals": value_hits,
                 "engagement_signals": engagement_hits,
                 "excluded_signals": exclusion_hits,
+                "signal_summary": {
+                    "value_count": len(value_hits),
+                    "engagement_count": len(engagement_hits),
+                    "exclusion_count": len(exclusion_hits),
+                },
             },
         )
 
@@ -1748,5 +1734,6 @@ def register(registry):
         domain_cls=CustomerValueDomain,
         detector_cls=CustomerValueDomainDetector,
     )
+
 
 
