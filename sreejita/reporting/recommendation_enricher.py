@@ -1,12 +1,12 @@
 """
-Recommendation Enricher
------------------------
+Recommendation Enricher (Phase 2 — Confidence Safe)
+--------------------------------------------------
 Normalizes domain recommendations into a stable reporting contract.
 
-GUARANTEES:
-- Never crashes
-- Never drops recommendations
-- Never emits incomplete records
+PHASE-2 GUARANTEES:
+- Never inflates confidence
+- Never invents evidence
+- Suppresses unsafe recommendations explicitly
 - Preserves domain-added fields
 - Deterministic & board-safe
 """
@@ -20,42 +20,32 @@ from sreejita.reporting.contracts import (
 )
 
 # --------------------------------------------------
-# HARD LIMITS (EXECUTIVE SAFE)
+# GOVERNANCE LIMITS (PHASE 2)
 # --------------------------------------------------
 
 MIN_CONFIDENCE = 0.30
-MAX_CONFIDENCE = 0.95
-
 VALID_PRIORITIES = {"HIGH", "MEDIUM", "LOW"}
 
 
 # ==================================================
-# INTERNAL HELPERS (SAFE & PURE)
+# INTERNAL HELPERS (PURE, NO INFLATION)
 # ==================================================
 
-def _clamp_confidence(value: Any) -> float:
-    """
-    Clamp confidence into board-safe range.
-    """
+def _safe_float(value: Any) -> float | None:
     try:
-        val = float(value)
+        v = float(value)
+        if v < 0.0 or v > 1.0:
+            return None
+        return v
     except Exception:
-        return MIN_CONFIDENCE
-
-    return round(
-        max(MIN_CONFIDENCE, min(val, MAX_CONFIDENCE)),
-        2,
-    )
+        return None
 
 
 def _normalize_priority(value: Any) -> str:
-    """
-    Normalize priority into controlled enum.
-    """
     if isinstance(value, str):
-        value = value.upper().strip()
-        if value in VALID_PRIORITIES:
-            return value
+        v = value.upper().strip()
+        if v in VALID_PRIORITIES:
+            return v
     return "MEDIUM"
 
 
@@ -67,23 +57,29 @@ def _safe_str(value: Any, default: str) -> str:
         return default
 
 
+def _has_evidence(rec: Dict[str, Any]) -> bool:
+    return bool(
+        rec.get("evidence")
+        or rec.get("kpi")
+        or rec.get("kpis")
+    )
+
+
 # ==================================================
-# PUBLIC API (AUTHORITATIVE)
+# PUBLIC API (AUTHORITATIVE, PHASE-2 SAFE)
 # ==================================================
 
 def enrich_recommendations(
     recommendations: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """
-    Enrich and normalize recommendations from any domain.
+    Normalize and govern recommendations.
 
-    OUTPUT GUARANTEES:
-    - List[Dict[str, Any]]
-    - All required fields present
-    - Confidence always bounded
-    - Priority normalized
-    - Stable deduplication
-    - Deterministic ordering
+    Phase-2 Rules:
+    - Suppress recommendations without evidence
+    - Suppress recommendations with weak confidence
+    - Never inflate confidence
+    - Never emit fake fallbacks
     """
 
     if not isinstance(recommendations, list):
@@ -93,15 +89,18 @@ def enrich_recommendations(
     seen_keys = set()
 
     for rec in recommendations:
+        if not isinstance(rec, dict):
+            continue
+
         try:
-            # -------------------------------------------------
-            # 1. PRIMARY NORMALIZATION (AUTHORITATIVE CONTRACT)
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # 1. CONTRACT NORMALIZATION
+            # ---------------------------------------------
             normalized = normalize_recommendation(rec)
 
-            # -------------------------------------------------
+            # ---------------------------------------------
             # 2. BACKWARD COMPATIBILITY
-            # -------------------------------------------------
+            # ---------------------------------------------
             if (
                 "expected_impact" in normalized
                 and not normalized.get("expected_outcome")
@@ -110,13 +109,35 @@ def enrich_recommendations(
                     "expected_impact"
                 )
 
-            # -------------------------------------------------
-            # 3. HARD FIELD GUARDS (NON-NEGOTIABLE)
-            # -------------------------------------------------
-            normalized["confidence"] = _clamp_confidence(
-                normalized.get("confidence")
-            )
+            # ---------------------------------------------
+            # 3. EVIDENCE & CONFIDENCE GATING (PHASE 2)
+            # ---------------------------------------------
+            confidence = _safe_float(normalized.get("confidence"))
+            signal_strength = _safe_float(normalized.get("signal_strength"))
 
+            if (
+                confidence is None
+                or confidence < MIN_CONFIDENCE
+                or signal_strength is None
+                or not _has_evidence(normalized)
+            ):
+                enriched.append({
+                    "status": "insufficient_data",
+                    "reason": (
+                        "Recommendation suppressed due to weak or missing "
+                        "confidence, signal_strength, or evidence"
+                    ),
+                    "confidence": confidence,
+                    "signal_strength": signal_strength,
+                    "evidence": normalized.get("evidence"),
+                    "suppressed": True,
+                })
+                continue
+
+            # ---------------------------------------------
+            # 4. HARD FIELD NORMALIZATION (SAFE)
+            # ---------------------------------------------
+            normalized["confidence"] = confidence
             normalized["priority"] = _normalize_priority(
                 normalized.get("priority")
             )
@@ -146,9 +167,9 @@ def enrich_recommendations(
                 "unknown",
             )
 
-            # -------------------------------------------------
-            # 4. STABLE DEDUPLICATION (SUBDOMAIN + ACTION)
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # 5. STABLE DEDUPLICATION
+            # ---------------------------------------------
             dedup_key = (
                 normalized.get("sub_domain"),
                 normalized.get("action"),
@@ -161,34 +182,24 @@ def enrich_recommendations(
             enriched.append(normalized)
 
         except Exception:
-            # -------------------------------------------------
-            # 5. EXPLICIT DEGRADED FALLBACK (NEVER DROP)
-            # -------------------------------------------------
-            fallback = deepcopy(RECOMMENDATION_FIELDS)
-
-            fallback.update({
-                "action": "Review operational performance",
-                "priority": "MEDIUM",
-                "confidence": MIN_CONFIDENCE,
-                "expected_outcome": "Recommendation could not be fully generated",
-                "owner": "Management",
-                "timeline": "TBD",
-                "goal": "Stabilize operations",
-                "sub_domain": "unknown",
-                "degraded": True,  # 🔴 explicit marker
+            # ---------------------------------------------
+            # 6. EXPLICIT SUPPRESSION ON ERROR (NO FALLBACK)
+            # ---------------------------------------------
+            enriched.append({
+                "status": "insufficient_data",
+                "reason": "Recommendation suppressed due to processing error",
+                "suppressed": True,
             })
 
-            enriched.append(fallback)
-
     # -------------------------------------------------
-    # 6. DETERMINISTIC EXECUTIVE SORTING
+    # 7. DETERMINISTIC EXECUTIVE SORTING
     # -------------------------------------------------
     priority_rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 
     enriched.sort(
         key=lambda r: (
             priority_rank.get(r.get("priority"), 3),
-            -float(r.get("confidence", 0.0)),
+            -(r.get("confidence") or 0.0),
             r.get("action", ""),
         )
     )
