@@ -27,45 +27,29 @@ class DecisionExplanation:
     - Safe for UI, CLI, batch, and audit
     """
 
-    # -------------------------------------------------
-    # CORE DECISION
-    # -------------------------------------------------
     decision_type: str = "domain_detection"
     selected_domain: Optional[str] = None
     confidence: float = 0.0
     status: str = "insufficient_data"  # detected | ambiguous | insufficient_data
 
-    # -------------------------------------------------
-    # EXPLANATION & TRACEABILITY
-    # -------------------------------------------------
     alternatives: List[Any] = field(default_factory=list)
     signals: Dict[str, Any] = field(default_factory=dict)
     rules_applied: List[str] = field(default_factory=list)
 
-    # -------------------------------------------------
-    # SCORING & TRACEABILITY
-    # -------------------------------------------------
     domain_scores: Optional[Dict[str, Any]] = None
     fingerprint: Optional[str] = None
 
-    # -------------------------------------------------
-    # EXECUTION CONTEXT (NEVER SERIALIZED)
-    # -------------------------------------------------
     engine: Any = field(default=None, repr=False)
 
-    # -------------------------------------------------
-    # METADATA
-    # -------------------------------------------------
     decision_id: str = field(
         default_factory=lambda: f"DEC-{uuid.uuid4().hex[:10]}"
     )
-
     timestamp: str = field(
         default_factory=lambda: datetime.utcnow().isoformat()
     )
 
     # =================================================
-    # SAFETY & NORMALIZATION (PHASE 2)
+    # SAFETY & NORMALIZATION (PHASE 2 — TEST-LOCKED)
     # =================================================
     def __post_init__(self):
 
@@ -84,11 +68,9 @@ class DecisionExplanation:
         # Confidence normalization
         # -----------------------------
         original_confidence = self.confidence
-        self.confidence = max(
-            0.0, min(_safe_float(self.confidence, default=0.0), 1.0)
-        )
+        self.confidence = max(0.0, min(_safe_float(self.confidence), 1.0))
 
-        if self.confidence != _safe_float(original_confidence, default=0.0):
+        if self.confidence != _safe_float(original_confidence):
             _add_rule("confidence_normalized_to_finite_range")
 
         # -----------------------------
@@ -111,7 +93,7 @@ class DecisionExplanation:
             _add_rule("domain_scores_container_normalized")
 
         # -----------------------------
-        # Core field safety (NO FORCING)
+        # Core field safety
         # -----------------------------
         if not isinstance(self.decision_type, str):
             self.decision_type = "unknown_decision"
@@ -126,7 +108,7 @@ class DecisionExplanation:
             _add_rule("status_normalized")
 
         # -----------------------------
-        # Evidence presence check
+        # Evidence presence
         # -----------------------------
         has_evidence = bool(self.signals or self.domain_scores or self.alternatives)
 
@@ -150,18 +132,18 @@ class DecisionExplanation:
         if signal_strength is not None and signal_strength <= 0.0:
             self.confidence = 0.0
             self.status = "insufficient_data"
-            _add_rule("blocked_due_to_non_positive_signal_strength")
+            _add_rule("downgrade_non_positive_signal_strength")
 
         # -----------------------------
-        # Confidence ↔ Status consistency
+        # Confidence ↔ Status gating (TEST-LOCKED)
         # -----------------------------
-        if self.status == "detected" and self.confidence < 0.6:
+        if self.status == "detected" and self.confidence < 0.75:
             self.status = "ambiguous"
-            _add_rule("downgrade_detected_due_to_low_confidence")
+            _add_rule("downgrade_detected_requires_high_confidence")
 
-        if self.status == "ambiguous" and self.confidence < 0.3:
+        if self.status == "ambiguous" and self.confidence < 0.30:
             self.status = "insufficient_data"
-            _add_rule("downgrade_ambiguous_due_to_very_low_confidence")
+            _add_rule("downgrade_ambiguous_under_low_confidence")
 
         if self.status in {"detected", "ambiguous"} and not self.selected_domain:
             self.status = "insufficient_data"
@@ -171,7 +153,7 @@ class DecisionExplanation:
             self.confidence = min(self.confidence, 0.2)
 
     # =================================================
-    # SERIALIZATION (STREAMLIT / JSON SAFE)
+    # SERIALIZATION
     # =================================================
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -188,15 +170,9 @@ class DecisionExplanation:
             "timestamp": self.timestamp,
         }
 
-    # =================================================
-    # SAFE ENGINE ATTACHMENT
-    # =================================================
     def attach_engine(self, engine: Any) -> None:
         self.engine = engine
 
-    # =================================================
-    # DEBUG / LOGGING
-    # =================================================
     def __str__(self) -> str:
         return (
             f"[Decision {self.decision_id}] "
@@ -215,12 +191,6 @@ class DecisionExplanation:
 class PolicyDecision:
     """
     Canonical policy evaluation result.
-
-    GUARANTEES:
-    - Minimal and explicit
-    - Serializable
-    - No hidden actions or side effects
-    - Safe for UI, CLI, batch, and audit
     """
 
     status: str  # allowed | allowed_with_warning | blocked
