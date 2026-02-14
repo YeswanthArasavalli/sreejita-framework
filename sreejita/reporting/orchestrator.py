@@ -344,43 +344,37 @@ def generate_report_payload(
         key=lambda v: float(v.get("importance", 0.0)) * float(v.get("confidence", 0.0)),
         reverse=True,
     )[:MAX_EXECUTIVE_VISUALS]
+    
 
     # -------------------------------------------------
-    # 7. EXECUTIVE COGNITION
-    # -------------------------------------------------
-    executive = build_executive_payload(
-        kpis=kpis,
-        insights=insights,
-        recommendations=recommendations,
-        domain=domain,
-    )
-
-    executive["sub_domains"] = build_subdomain_executive_payloads(
-        kpis,
-        insights,
-        recommendations,
-        domain=domain,
-    )
-
-    # -------------------------------------------------
-    # 8. END-TO-END CONFIDENCE PROPAGATION (MIN-DOMINANT)
+    # 7. END-TO-END CONFIDENCE PROPAGATION (MIN-DOMINANT)
     # -------------------------------------------------
     conf_candidates = [confidence]
-
+    
+    # KPIs are first-class confidence contributors
+    for kpi_val in kpis.values():
+        c = _extract_confidence(kpi_val)
+        if c is not None:
+            conf_candidates.append(c)
+    
+        ss = _extract_signal_strength(kpi_val)
+        if ss is not None:
+            conf_candidates.append(ss)
+    
+        dc = _extract_data_coverage(kpi_val)
+        if dc is not None:
+            conf_candidates.append(dc)
+    
+    # Insights, visuals, recommendations
     for group in (visuals, insights, recommendations):
         for item in group:
             c = _extract_confidence(item)
             if c is not None:
                 conf_candidates.append(c)
-
-    for kpi_val in kpis.values():
-        c = _extract_confidence(kpi_val)
-        if c is not None:
-            conf_candidates.append(c)
-
+    
     aggregate_conf = _min_confidence(conf_candidates)
-    executive["confidence"] = aggregate_conf
-
+    
+    # If aggregate confidence cannot be computed, suppress execution
     if aggregate_conf is None:
         return {
             domain: {
@@ -404,20 +398,20 @@ def generate_report_payload(
                 "shape": shape_info,
             }
         }
-
+    
     has_insufficient_component = (
         any(_is_insufficient_component(i) for i in insights)
         or any(_is_insufficient_component(r) for r in recommendations)
-        or _is_insufficient_component(executive)
     )
-
+    
     if has_insufficient_component:
         aggregate_status = "insufficient_data"
     elif aggregate_conf < MIN_DOMAIN_CONFIDENCE:
         aggregate_status = "ambiguous"
     else:
         aggregate_status = "detected"
-
+    
+    # Suppress downstream content if aggregate confidence is weak
     if aggregate_status != "detected":
         if insights:
             limitations.append("Suppressed insights due to aggregate confidence downgrade")
@@ -425,25 +419,55 @@ def generate_report_payload(
             limitations.append("Suppressed recommendations due to aggregate confidence downgrade")
         insights = []
         recommendations = []
-
+    
+    # -------------------------------------------------
+    # 8. EXECUTIVE COGNITION (POST-GATING ONLY)
+    # -------------------------------------------------
+    executive = build_executive_payload(
+        kpis=kpis,
+        insights=insights,
+        recommendations=recommendations,
+        domain=domain,
+    )
+    
+    executive["sub_domains"] = build_subdomain_executive_payloads(
+        kpis,
+        insights,
+        recommendations,
+        domain=domain,
+    )
+    
+    # Executive confidence and downgrade acknowledgment
+    executive["confidence"] = aggregate_conf
+    
+    if aggregate_status != "detected":
+        executive["executive_brief"] = (
+            f"Analysis for '{domain}' was downgraded due to insufficient aggregate confidence "
+            "across contributing signals. Detailed insights and recommendations have been "
+            "suppressed to preserve decision integrity."
+        )
+        executive.setdefault("limitations", []).append(
+            "Insights and recommendations suppressed due to low aggregate confidence"
+        )
+    
     # -------------------------------------------------
     # 9. BOARD READINESS TREND
     # -------------------------------------------------
     history = _load_history(run_dir)
-
+    
     board = executive.get("board_readiness", {}) or {}
     current_score = board.get("score")
     previous_score = history.get(dataset_key)
-
+    
     executive["board_readiness_trend"] = {
         "previous_score": previous_score,
         "current_score": current_score,
         "trend": _trend(previous_score, current_score),
     }
-
+    
     if limitations:
         executive["limitations"] = executive.get("limitations", []) + limitations
-
+    
     if isinstance(current_score, int):
         history[dataset_key] = current_score
         _save_history(run_dir, history)
