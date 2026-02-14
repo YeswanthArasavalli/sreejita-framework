@@ -1,6 +1,5 @@
 from sreejita.core.decision import DecisionExplanation
 
-
 def test_confidence_without_evidence_is_downgraded_to_zero_and_recorded():
     d = DecisionExplanation(selected_domain="healthcare", confidence=0.8, status="detected")
     assert d.confidence == 0.0
