@@ -10,8 +10,8 @@ import pandas as pd
 # Phase-3 safety thresholds (deterministic and explicit)
 # =====================================================
 
-_MIN_SAMPLE_SIZE = 20            # 🔒 Phase-3: executive-safe minimum
-_MIN_SIGNAL_STRENGTH = 0.40      # retained for metadata only
+_MIN_SAMPLE_SIZE = 20
+_MIN_SIGNAL_STRENGTH = 0.40
 
 
 # =====================================================
@@ -31,17 +31,20 @@ def _safe_score(value: Any) -> float:
 def _resolve_signal_strength(df: pd.DataFrame) -> Tuple[bool, float, str]:
     """
     Phase-3 rule:
-    Visuals do NOT infer signal.
-    Signal must be explicitly attached upstream.
+    - Visuals do NOT infer signal
+    - They may consume explicit upstream signal
     """
-    return False, 0.0, "no_explicit_signal_provided"
+    if "signal_strength" not in df.attrs:
+        return False, 0.0, "missing_signal_strength"
+
+    signal_strength = _safe_score(df.attrs.get("signal_strength"))
+    if signal_strength < _MIN_SIGNAL_STRENGTH:
+        return False, signal_strength, "weak_signal_strength"
+
+    return True, signal_strength, "ok"
 
 
 def _has_zero_variance(series: pd.Series) -> bool:
-    """
-    Guard clause: empty, constant, or near-constant numeric
-    series cannot support meaningful visual inference.
-    """
     clean = pd.to_numeric(series, errors="coerce").dropna()
     if clean.empty:
         return True
@@ -59,10 +62,10 @@ def _suppression_metadata(
     return {
         "status": "insufficient_data",
         "reason": reason,
-        "inference_type": "suppressed",
         "confidence": _safe_score(confidence),
         "sample_size": int(sample_size),
         "signal_strength": _safe_score(signal_strength),
+        "inference_type": "suppressed",
     }
 
 
@@ -77,20 +80,15 @@ def _render_insufficient_data_visual(
     title: str,
     metadata: Dict[str, Any],
 ) -> None:
-    """
-    Create an explicit placeholder visual instead of silently dropping output.
-    """
     plt.figure(figsize=(6, 4))
     plt.axis("off")
     plt.title(title)
 
     text = (
         "INSUFFICIENT DATA\n\n"
-        f"Reason: {metadata.get('reason')}\n"
-        f"Inference: {metadata.get('inference_type')}\n"
-        f"Confidence: {metadata.get('confidence'):.2f}\n"
-        f"Signal Strength: {metadata.get('signal_strength'):.2f}\n"
-        f"Sample Size: {metadata.get('sample_size')}"
+        f"Reason: {metadata['reason']}\n"
+        f"Signal Strength: {metadata['signal_strength']:.2f}\n"
+        f"Sample Size: {metadata['sample_size']}"
     )
 
     plt.text(0.5, 0.5, text, ha="center", va="center")
@@ -107,20 +105,10 @@ def shipping_cost_vs_sales(df: pd.DataFrame, output_dir: Path) -> Path:
     path = output_dir / "shipping_cost_vs_sales.png"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sample_size = int(len(df))
+    sample_size = len(df)
     ok_signal, signal_strength, signal_reason = _resolve_signal_strength(df)
 
-    if sample_size < _MIN_SAMPLE_SIZE:
-        meta = _suppression_metadata(
-            reason="sample_size_below_minimum",
-            confidence=signal_strength,
-            sample_size=sample_size,
-            signal_strength=signal_strength,
-        )
-        _render_insufficient_data_visual(path, "Shipping Cost vs Sales", meta)
-        _write_visual_metadata(path, meta)
-        return path
-
+    # 1️⃣ Missing / weak signal dominates everything
     if not ok_signal:
         meta = _suppression_metadata(
             reason=signal_reason,
@@ -132,10 +120,8 @@ def shipping_cost_vs_sales(df: pd.DataFrame, output_dir: Path) -> Path:
         _write_visual_metadata(path, meta)
         return path
 
-    if (
-        _has_zero_variance(df["sales"])
-        or _has_zero_variance(df["shipping_cost"])
-    ):
+    # 2️⃣ Zero variance
+    if _has_zero_variance(df["sales"]) or _has_zero_variance(df["shipping_cost"]):
         meta = _suppression_metadata(
             reason="zero_variance",
             confidence=signal_strength,
@@ -146,6 +132,19 @@ def shipping_cost_vs_sales(df: pd.DataFrame, output_dir: Path) -> Path:
         _write_visual_metadata(path, meta)
         return path
 
+    # 3️⃣ Sample size
+    if sample_size < _MIN_SAMPLE_SIZE:
+        meta = _suppression_metadata(
+            reason="sample_size_below_minimum",
+            confidence=signal_strength,
+            sample_size=sample_size,
+            signal_strength=signal_strength,
+        )
+        _render_insufficient_data_visual(path, "Shipping Cost vs Sales", meta)
+        _write_visual_metadata(path, meta)
+        return path
+
+    # ✅ Render
     plt.figure(figsize=(6, 4))
     plt.scatter(df["sales"], df["shipping_cost"], alpha=0.4)
     plt.xlabel("Sales")
@@ -160,10 +159,10 @@ def shipping_cost_vs_sales(df: pd.DataFrame, output_dir: Path) -> Path:
         {
             "status": "rendered",
             "reason": "ok",
-            "inference_type": "direct",
-            "confidence": _safe_score(signal_strength),
+            "confidence": signal_strength,
             "sample_size": sample_size,
-            "signal_strength": _safe_score(signal_strength),
+            "signal_strength": signal_strength,
+            "inference_type": "direct",
         },
     )
 
@@ -174,19 +173,8 @@ def discount_distribution(df: pd.DataFrame, output_dir: Path) -> Path:
     path = output_dir / "discount_distribution.png"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sample_size = int(len(df))
+    sample_size = len(df)
     ok_signal, signal_strength, signal_reason = _resolve_signal_strength(df)
-
-    if sample_size < _MIN_SAMPLE_SIZE:
-        meta = _suppression_metadata(
-            reason="sample_size_below_minimum",
-            confidence=signal_strength,
-            sample_size=sample_size,
-            signal_strength=signal_strength,
-        )
-        _render_insufficient_data_visual(path, "Distribution of Discounts", meta)
-        _write_visual_metadata(path, meta)
-        return path
 
     if not ok_signal:
         meta = _suppression_metadata(
@@ -210,6 +198,17 @@ def discount_distribution(df: pd.DataFrame, output_dir: Path) -> Path:
         _write_visual_metadata(path, meta)
         return path
 
+    if sample_size < _MIN_SAMPLE_SIZE:
+        meta = _suppression_metadata(
+            reason="sample_size_below_minimum",
+            confidence=signal_strength,
+            sample_size=sample_size,
+            signal_strength=signal_strength,
+        )
+        _render_insufficient_data_visual(path, "Distribution of Discounts", meta)
+        _write_visual_metadata(path, meta)
+        return path
+
     plt.figure(figsize=(6, 4))
     plt.hist(df["discount"], bins=20, alpha=0.7)
     plt.xlabel("Discount Rate")
@@ -224,10 +223,10 @@ def discount_distribution(df: pd.DataFrame, output_dir: Path) -> Path:
         {
             "status": "rendered",
             "reason": "ok",
-            "inference_type": "direct",
-            "confidence": _safe_score(signal_strength),
+            "confidence": signal_strength,
             "sample_size": sample_size,
-            "signal_strength": _safe_score(signal_strength),
+            "signal_strength": signal_strength,
+            "inference_type": "direct",
         },
     )
 
