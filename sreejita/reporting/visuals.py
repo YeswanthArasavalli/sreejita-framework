@@ -10,8 +10,8 @@ import pandas as pd
 # Phase-3 safety thresholds (deterministic and explicit)
 # =====================================================
 
-_MIN_SAMPLE_SIZE = 10
-_MIN_SIGNAL_STRENGTH = 0.40
+_MIN_SAMPLE_SIZE = 20            # 🔒 Phase-3: executive-safe minimum
+_MIN_SIGNAL_STRENGTH = 0.40      # retained for metadata only
 
 
 # =====================================================
@@ -30,31 +30,24 @@ def _safe_score(value: Any) -> float:
 
 def _resolve_signal_strength(df: pd.DataFrame) -> Tuple[bool, float, str]:
     """
-    Resolve signal strength from dataframe metadata.
-
-    Guard clause: visuals must not imply certainty without explicit upstream evidence.
-    Missing signal strength is treated as insufficient data.
+    Phase-3 rule:
+    Visuals do NOT infer signal.
+    Signal must be explicitly attached upstream.
     """
-    raw = df.attrs.get("signal_strength")
-    if raw is None:
-        return False, 0.0, "missing_signal_strength"
-
-    signal_strength = _safe_score(raw)
-    if signal_strength < _MIN_SIGNAL_STRENGTH:
-        return False, signal_strength, "weak_signal_strength"
-
-    return True, signal_strength, "ok"
+    return False, 0.0, "no_explicit_signal_provided"
 
 
 def _has_zero_variance(series: pd.Series) -> bool:
     """
-    Guard clause: empty or constant numeric series cannot support
-    meaningful visual inference.
+    Guard clause: empty, constant, or near-constant numeric
+    series cannot support meaningful visual inference.
     """
     clean = pd.to_numeric(series, errors="coerce").dropna()
     if clean.empty:
         return True
-    return clean.nunique(dropna=True) <= 1
+    if clean.nunique(dropna=True) <= 1:
+        return True
+    return clean.std() == 0.0
 
 
 def _suppression_metadata(
@@ -66,6 +59,7 @@ def _suppression_metadata(
     return {
         "status": "insufficient_data",
         "reason": reason,
+        "inference_type": "suppressed",
         "confidence": _safe_score(confidence),
         "sample_size": int(sample_size),
         "signal_strength": _safe_score(signal_strength),
@@ -93,6 +87,7 @@ def _render_insufficient_data_visual(
     text = (
         "INSUFFICIENT DATA\n\n"
         f"Reason: {metadata.get('reason')}\n"
+        f"Inference: {metadata.get('inference_type')}\n"
         f"Confidence: {metadata.get('confidence'):.2f}\n"
         f"Signal Strength: {metadata.get('signal_strength'):.2f}\n"
         f"Sample Size: {metadata.get('sample_size')}"
@@ -165,6 +160,7 @@ def shipping_cost_vs_sales(df: pd.DataFrame, output_dir: Path) -> Path:
         {
             "status": "rendered",
             "reason": "ok",
+            "inference_type": "direct",
             "confidence": _safe_score(signal_strength),
             "sample_size": sample_size,
             "signal_strength": _safe_score(signal_strength),
@@ -228,6 +224,7 @@ def discount_distribution(df: pd.DataFrame, output_dir: Path) -> Path:
         {
             "status": "rendered",
             "reason": "ok",
+            "inference_type": "direct",
             "confidence": _safe_score(signal_strength),
             "sample_size": sample_size,
             "signal_strength": _safe_score(signal_strength),
