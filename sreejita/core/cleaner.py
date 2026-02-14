@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import numpy as np
@@ -50,7 +50,7 @@ def _kpi_payload(
 
 def clean_dataframe(
     df: pd.DataFrame,
-    preserve_date_cols: List[str] | None = None,
+    preserve_date_cols: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Deterministically clean a dataframe and produce audit-safe metrics.
@@ -60,12 +60,6 @@ def clean_dataframe(
     - Never hallucinates values
     - Never mutates dates unless allowed
     - Reports data integrity KPIs
-
-    Returns:
-        {
-            "df": cleaned_dataframe,
-            "summary": audit_summary
-        }
     """
 
     preserve_date_cols = preserve_date_cols or []
@@ -115,7 +109,7 @@ def clean_dataframe(
     df = df.replace(r"^\s*$", np.nan, regex=True)
 
     # -----------------------------
-    # Clean object columns (SAFE)
+    # Clean object columns (NaN-safe)
     # -----------------------------
     for c in df.select_dtypes(include="object"):
         if c in preserve_date_cols:
@@ -146,7 +140,7 @@ def clean_dataframe(
 
         std = _safe_float(series.std(), default=0.0)
 
-        # Zero variance → no signal, not an error
+        # Zero variance → no signal
         if std == 0.0:
             outlier_flags[col] = 0
             outlier_kpis[col] = _kpi_payload(
