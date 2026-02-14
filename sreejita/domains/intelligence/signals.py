@@ -9,11 +9,13 @@ import pandas as pd
 
 
 # -------------------------------------------------
-# DOMAIN SIGNAL DEFINITIONS
+# DOMAIN SIGNAL DEFINITIONS (STRONG INDICATORS)
 # -------------------------------------------------
-# These are STRONG, explicit indicators.
-# Presence implies real domain relevance.
-# Absence implies no signal — not negative evidence.
+# RULES:
+# - Signals are POSITIVE evidence only
+# - Absence is neutral (not negative)
+# - Signals NEVER force domain selection
+# - Used for explanation & reinforcement only
 # -------------------------------------------------
 
 DOMAIN_SIGNALS: Dict[str, Set[str]] = {
@@ -84,9 +86,9 @@ DOMAIN_SIGNALS: Dict[str, Set[str]] = {
 }
 
 
-# -------------------------------------------------
-# SIGNAL EVALUATION
-# -------------------------------------------------
+# =====================================================
+# SIGNAL EXTRACTION (COLUMN-BASED ONLY)
+# =====================================================
 
 def extract_domain_signals(
     normalized_columns: Set[str],
@@ -97,19 +99,23 @@ def extract_domain_signals(
     RETURNS:
     {
         domain: {
-            "matched_signals": [...],
-            "signal_strength": float (0–1),
-            "signal_count": int
+            "matched_signals": List[str],
+            "signal_count": int,
+            "signal_strength": float  # 0.0–1.0 (coverage-based, not probability)
         }
     }
 
     GUARANTEES:
     - Never raises
+    - Deterministic
     - No domain is forced
-    - Missing signals are neutral (not negative)
+    - Missing signals are neutral
     """
 
     results: Dict[str, Dict[str, Any]] = {}
+
+    if not isinstance(normalized_columns, set) or not normalized_columns:
+        return results
 
     for domain, signals in DOMAIN_SIGNALS.items():
         matches = signals.intersection(normalized_columns)
@@ -117,34 +123,45 @@ def extract_domain_signals(
         if not matches:
             continue
 
-        # Conservative normalization
-        strength = min(len(matches) / max(len(signals), 1), 1.0)
+        # Conservative normalization:
+        # strength = proportion of known strong signals present
+        denom = max(len(signals), 1)
+        strength = min(len(matches) / denom, 1.0)
 
         results[domain] = {
             "matched_signals": sorted(matches),
             "signal_count": len(matches),
-            "signal_strength": round(strength, 3),
+            "signal_strength": round(float(strength), 3),
         }
 
     return results
 
 
-# -------------------------------------------------
-# DATAFRAME-AWARE HELPER (OPTIONAL)
-# -------------------------------------------------
+# =====================================================
+# DATAFRAME-AWARE WRAPPER (FUTURE-SAFE)
+# =====================================================
 
 def extract_signals_from_df(
     df: pd.DataFrame,
     normalized_columns: Set[str],
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Convenience wrapper for detectors.
+    DataFrame-aware signal extraction.
 
-    Allows future extension to value-based signals
-    (e.g., non-null ratios, value ranges).
+    CURRENT BEHAVIOR:
+    - Column-name signals only
+
+    FUTURE EXTENSIONS (EXPLICIT, NOT IMPLIED):
+    - Non-null ratios
+    - Value ranges
+    - Cardinality checks
+
+    GUARANTEES:
+    - Never raises
+    - Never infers domain
     """
 
-    signals = extract_domain_signals(normalized_columns)
+    if not isinstance(df, pd.DataFrame):
+        return {}
 
-    # Future-safe hook (currently no value inference)
-    return signals
+    return extract_domain_signals(normalized_columns)
