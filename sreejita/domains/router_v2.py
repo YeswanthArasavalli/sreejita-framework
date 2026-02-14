@@ -1,17 +1,15 @@
 """
-Router v2.1 — Universal, Detector-Authoritative, Hint-Aware
-Sreejita Framework v3.6.1
+Router v2.2 — Detector-Authoritative, Evidence-Governed
+Sreejita Framework v3.6.x
 
-RULES:
-- Router NEVER guesses domains
-- Router NEVER imports domain modules
-- Router RESPECTS detector confidence
-- Router HONORS user hint ONLY if domain exists
-- Router NEVER forces healthcare
-- Router NEVER raises on auto-detect
+PHASE-4 GUARANTEES:
+- Unknown domain is first-class
+- No forced selection
+- Confidence is explainable
+- Thresholds have semantic meaning
 """
 
-from typing import Optional
+from typing import Optional, Dict
 import pandas as pd
 
 from sreejita.domains.registry import registry
@@ -19,12 +17,13 @@ from sreejita.domains.contracts import DomainDetectionResult
 
 
 # =====================================================
-# GOVERNANCE CONSTANTS (LOCKED)
+# GOVERNANCE CONSTANTS (SEMANTIC, LOCKED)
 # =====================================================
 
-MIN_CONFIDENCE_ACCEPT = 0.40     # authoritative acceptance gate
+MIN_CONFIDENCE_ACCEPT = 0.40     # sufficient evidence threshold
 HINT_CONFIDENCE = 0.95           # explicit user trust
-FALLBACK_CONFIDENCE = 0.35       # informational only (non-blocking)
+NO_DOMAIN_CONFIDENCE = 0.0       # explicit unknown
+WEAK_SIGNAL_FLOOR = 0.20         # informational only
 
 
 # =====================================================
@@ -38,15 +37,12 @@ def detect_domain(
     strict: bool = False,
 ) -> DomainDetectionResult:
     """
-    Canonical domain detection.
+    Canonical domain detection (Phase 4).
 
-    Priority order:
-    1. User hint (if valid & registered)
-    2. Detector-based scoring
-    3. Safe fallback (NO domain)
-
-    Returns DomainDetectionResult ALWAYS.
-    NEVER raises.
+    Router responsibilities:
+    - Aggregate detector outputs
+    - Decide acceptance vs rejection
+    - Never force a domain
     """
 
     # -------------------------------------------------
@@ -55,14 +51,14 @@ def detect_domain(
     if not isinstance(df, pd.DataFrame) or df.empty:
         return DomainDetectionResult(
             domain=None,
-            confidence=0.0,
-            signals={"error": "empty_or_invalid_dataframe"},
+            confidence=NO_DOMAIN_CONFIDENCE,
+            signals={"reason": "empty_or_invalid_dataframe"},
         )
 
     # -------------------------------------------------
-    # STEP 1: USER DOMAIN HINT (TRUSTED BUT VERIFIED)
+    # STEP 1: USER DOMAIN HINT (EXPLICIT, NEVER BLIND)
     # -------------------------------------------------
-    hint_signal = {}
+    hint_signals: Dict[str, any] = {}
 
     if isinstance(domain_hint, str) and domain_hint.strip():
         hint = domain_hint.strip().lower()
@@ -71,16 +67,20 @@ def detect_domain(
             return DomainDetectionResult(
                 domain=hint,
                 confidence=HINT_CONFIDENCE,
-                signals={"user_hint": hint},
+                signals={
+                    "source": "user_hint",
+                    "hint": hint,
+                    "acceptance": "explicit",
+                },
             )
         else:
-            # Invalid hint — recorded, never forced
-            hint_signal = {"invalid_user_hint": hint}
+            hint_signals["invalid_user_hint"] = hint
 
     # -------------------------------------------------
-    # STEP 2: DETECTOR-BASED RESOLUTION (AUTHORITATIVE)
+    # STEP 2: DETECTOR EVALUATION (NO SELECTION YET)
     # -------------------------------------------------
     best: Optional[DomainDetectionResult] = None
+    all_scores: Dict[str, float] = {}
 
     for domain_name in registry.list_domains():
         detector = registry.get_detector(domain_name)
@@ -93,58 +93,66 @@ def detect_domain(
             if not isinstance(result, DomainDetectionResult):
                 continue
 
-            # Router owns execution lifecycle — strip engine defensively
+            # Router owns lifecycle
             result.engine = None
 
-            if (
-                best is None
-                or float(result.confidence or 0.0)
-                > float(best.confidence or 0.0)
-            ):
+            score = float(result.confidence or 0.0)
+            all_scores[domain_name] = score
+
+            if best is None or score > float(best.confidence or 0.0):
                 best = result
 
         except Exception:
-            # Detector failure must NEVER break routing
             continue
 
+    best_conf = float(best.confidence) if best else 0.0
+    best_domain = best.domain if best else None
+
     # -------------------------------------------------
-    # STEP 3: CONFIDENCE GOVERNANCE
+    # STEP 3: ACCEPTANCE GOVERNANCE (SEMANTIC)
     # -------------------------------------------------
     if (
         best
-        and isinstance(best.domain, str)
-        and best.domain
-        and float(best.confidence) >= MIN_CONFIDENCE_ACCEPT
+        and isinstance(best_domain, str)
+        and best_conf >= MIN_CONFIDENCE_ACCEPT
     ):
-        return best
-
-    if strict:
-        # Strict mode → explicit rejection
         return DomainDetectionResult(
-            domain=None,
-            confidence=float(best.confidence) if best else 0.0,
+            domain=best_domain,
+            confidence=best_conf,
             signals={
-                "reason": "strict_mode_reject",
-                "best_candidate": best.domain if best else None,
-                "best_confidence": float(best.confidence) if best else 0.0,
-                **hint_signal,
+                "source": "detector",
+                "accepted": True,
+                "all_domain_scores": all_scores,
+                **hint_signals,
             },
         )
 
     # -------------------------------------------------
-    # STEP 4: SAFE FALLBACK (INFORMATIONAL ONLY)
+    # STEP 4: EXPLICIT UNKNOWN DOMAIN
     # -------------------------------------------------
+    signals = {
+        "source": "detector",
+        "accepted": False,
+        "best_candidate": best_domain,
+        "best_confidence": best_conf,
+        "all_domain_scores": all_scores,
+        **hint_signals,
+    }
+
+    if strict:
+        signals["reason"] = "strict_mode_reject"
+        return DomainDetectionResult(
+            domain=None,
+            confidence=best_conf,
+            signals=signals,
+        )
+
+    signals["reason"] = "insufficient_domain_evidence"
+
     return DomainDetectionResult(
         domain=None,
-        confidence=float(best.confidence)
-        if best
-        else FALLBACK_CONFIDENCE,
-        signals={
-            "reason": "no_confident_domain_detected",
-            "best_candidate": best.domain if best else None,
-            "best_confidence": float(best.confidence) if best else 0.0,
-            **hint_signal,
-        },
+        confidence=max(best_conf, WEAK_SIGNAL_FLOOR),
+        signals=signals,
     )
 
 
@@ -158,12 +166,11 @@ def apply_domain(
     domain_hint: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Applies domain preprocessing ONLY if detection is confident.
+    Applies domain preprocessing ONLY if domain is confidently detected.
 
     GUARANTEES:
-    - NEVER forces a domain
-    - NEVER raises
-    - NEVER mutates original df
+    - Never forces a domain
+    - Never mutates original df
     """
 
     result = detect_domain(df, domain_hint=domain_hint)
@@ -180,7 +187,6 @@ def apply_domain(
         return df
 
     try:
-        # Domain preprocess must be pure
         return domain.preprocess(df)
     except Exception:
         return df
