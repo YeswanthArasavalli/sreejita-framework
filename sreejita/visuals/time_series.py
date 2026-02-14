@@ -1,51 +1,47 @@
+import json
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
-from matplotlib.ticker import FuncFormatter
+
+_MIN_SAMPLE_SIZE = 6  # months, not rows
 
 
-def _k_formatter(x, _):
-    return f"${x/1_000:.0f}K"
+def sales_trend_visual(df: pd.DataFrame, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "sales_trend.png"
 
-
-def sales_trend_visual(df, output_dir: Path):
     date_col = next((c for c in df.columns if "date" in c.lower()), None)
     sales_col = next((c for c in df.columns if "sales" in c.lower()), None)
 
     if not date_col or not sales_col:
-        return None
+        return path
 
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
     monthly = (
         df.dropna(subset=[date_col])
         .groupby(df[date_col].dt.to_period("M"))[sales_col]
         .sum()
     )
 
-    if monthly.empty:
-        return None
-
-    out = output_dir / "sales_trend.png"
+    if len(monthly) < _MIN_SAMPLE_SIZE or monthly.std() == 0:
+        return path
 
     plt.figure(figsize=(7, 4))
     plt.plot(monthly.index.to_timestamp(), monthly.values, marker="o")
-
-    growth = (monthly.iloc[-1] - monthly.iloc[0]) / monthly.iloc[0]
-    direction = "UP" if growth >= 0 else "DOWN"
-
-    plt.title(
-        f"Sales Trending {direction} ({growth:.1%} change)",
-        weight="bold"
-    )
-    plt.ylabel("Monthly Sales")
-
-    ax = plt.gca()
-    ax.yaxis.set_major_formatter(FuncFormatter(_k_formatter))
-    ax.grid(alpha=0.3)
-
+    plt.title("Sales Trend Over Time")
+    plt.ylabel("Sales")
+    plt.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig(out, dpi=120)
+    plt.savefig(path)
     plt.close()
 
-    return out
+    meta = {
+        "status": "rendered",
+        "reason": "ok",
+        "sample_size": len(monthly),
+        "inference_type": "direct",
+    }
+    path.with_suffix(".json").write_text(json.dumps(meta, indent=2))
+    return path
