@@ -76,7 +76,7 @@ class DataQualityValidator:
         data_coverage = 0.0 if row_count == 0 else 1.0
 
         # -----------------------------
-        # Raw metrics (backward compatible)
+        # Raw metrics
         # -----------------------------
         results["rows"] = row_count
         results["columns"] = col_count
@@ -102,14 +102,14 @@ class DataQualityValidator:
         )
 
         # -----------------------------
-        # Validation decision
+        # Validation decision (FIXED)
         # -----------------------------
         passed = True
-        if self.strict:
-            passed = duplicate_rows == 0 and row_count > 0
+        if self.strict and row_count > 0:
+            passed = duplicate_rows == 0
 
         # -----------------------------
-        # KPI CHANNEL (SEMANTICALLY CORRECT)
+        # KPI CHANNEL
         # -----------------------------
         results["kpi"] = {
             "rows": _kpi_payload(
