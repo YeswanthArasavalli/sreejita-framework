@@ -4,9 +4,10 @@ Sreejita Framework v3.6.x
 
 PHASE-4 GUARANTEES:
 - Unknown domain is first-class
-- No forced selection
+- No forced domain selection
+- Acceptance is evidence-governed
 - Confidence is explainable
-- Thresholds have semantic meaning
+- Router owns acceptance, detectors do not
 """
 
 from typing import Optional, Dict
@@ -23,7 +24,7 @@ from sreejita.domains.contracts import DomainDetectionResult
 MIN_CONFIDENCE_ACCEPT = 0.40     # sufficient evidence threshold
 HINT_CONFIDENCE = 0.95           # explicit user trust
 NO_DOMAIN_CONFIDENCE = 0.0       # explicit unknown
-WEAK_SIGNAL_FLOOR = 0.20         # informational only
+WEAK_SIGNAL_FLOOR = 0.20         # informational only (non-accepting)
 
 
 # =====================================================
@@ -39,9 +40,10 @@ def detect_domain(
     """
     Canonical domain detection (Phase 4).
 
-    Router responsibilities:
+    ROUTER RESPONSIBILITIES:
     - Aggregate detector outputs
     - Decide acceptance vs rejection
+    - Preserve explainability
     - Never force a domain
     """
 
@@ -56,9 +58,9 @@ def detect_domain(
         )
 
     # -------------------------------------------------
-    # STEP 1: USER DOMAIN HINT (EXPLICIT, NEVER BLIND)
+    # STEP 1: USER DOMAIN HINT (EXPLICIT, VERIFIED)
     # -------------------------------------------------
-    hint_signals: Dict[str, any] = {}
+    hint_signals: Dict[str, object] = {}
 
     if isinstance(domain_hint, str) and domain_hint.strip():
         hint = domain_hint.strip().lower()
@@ -77,7 +79,7 @@ def detect_domain(
             hint_signals["invalid_user_hint"] = hint
 
     # -------------------------------------------------
-    # STEP 2: DETECTOR EVALUATION (NO SELECTION YET)
+    # STEP 2: DETECTOR EVALUATION (NO ACCEPTANCE YET)
     # -------------------------------------------------
     best: Optional[DomainDetectionResult] = None
     all_scores: Dict[str, float] = {}
@@ -93,7 +95,7 @@ def detect_domain(
             if not isinstance(result, DomainDetectionResult):
                 continue
 
-            # Router owns lifecycle
+            # Router owns execution lifecycle
             result.engine = None
 
             score = float(result.confidence or 0.0)
@@ -103,6 +105,7 @@ def detect_domain(
                 best = result
 
         except Exception:
+            # Detector failure must never break routing
             continue
 
     best_conf = float(best.confidence) if best else 0.0
@@ -114,6 +117,7 @@ def detect_domain(
     if (
         best
         and isinstance(best_domain, str)
+        and best_domain
         and best_conf >= MIN_CONFIDENCE_ACCEPT
     ):
         return DomainDetectionResult(
@@ -122,6 +126,8 @@ def detect_domain(
             signals={
                 "source": "detector",
                 "accepted": True,
+                "best_candidate": best_domain,
+                "best_confidence": round(best_conf, 3),
                 "all_domain_scores": all_scores,
                 **hint_signals,
             },
@@ -134,7 +140,7 @@ def detect_domain(
         "source": "detector",
         "accepted": False,
         "best_candidate": best_domain,
-        "best_confidence": best_conf,
+        "best_confidence": round(best_conf, 3),
         "all_domain_scores": all_scores,
         **hint_signals,
     }
@@ -166,11 +172,12 @@ def apply_domain(
     domain_hint: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Applies domain preprocessing ONLY if domain is confidently detected.
+    Apply domain preprocessing ONLY if domain is confidently detected.
 
     GUARANTEES:
     - Never forces a domain
-    - Never mutates original df
+    - Never mutates original dataframe
+    - Safe under weak or ambiguous detection
     """
 
     result = detect_domain(df, domain_hint=domain_hint)
@@ -187,6 +194,7 @@ def apply_domain(
         return df
 
     try:
+        # Domain preprocess must be pure
         return domain.preprocess(df)
     except Exception:
         return df
