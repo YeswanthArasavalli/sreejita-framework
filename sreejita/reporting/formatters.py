@@ -1,28 +1,88 @@
 from typing import Optional
 
-def fmt_currency(value: Optional[float]) -> str:
+
+# =====================================================
+# Phase-3 formatting helpers
+# =====================================================
+
+def _is_low_confidence(confidence: Optional[float]) -> bool:
+    try:
+        return confidence is not None and float(confidence) < 0.4
+    except Exception:
+        return False
+
+
+# =====================================================
+# Currency Formatter (Confidence-Aware)
+# =====================================================
+
+def fmt_currency(
+    value: Optional[float],
+    confidence: Optional[float] = None,
+    suppressed: bool = False,
+) -> str:
     """
-    Canonical currency formatter for ALL reports.
+    Canonical currency formatter (Phase 3).
+
+    Rules:
+    - Never imply false precision
+    - Low confidence → approximate formatting
+    - Suppressed values are explicit
     """
+    if suppressed:
+        return "Insufficient data"
+
     if value is None:
-        return "-"
+        return "—"
 
     try:
         value = float(value)
     except Exception:
-        return "-"
+        return "—"
+
+    approx = _is_low_confidence(confidence)
 
     if abs(value) >= 1_000_000:
-        return f"${value/1_000_000:.2f}M"
-    if abs(value) >= 1_000:
-        return f"${value/1_000:.1f}K"
-    return f"${value:,.0f}"
+        formatted = f"${value/1_000_000:.1f}M" if approx else f"${value/1_000_000:.2f}M"
+    elif abs(value) >= 1_000:
+        formatted = f"${value/1_000:.0f}K" if approx else f"${value/1_000:.1f}K"
+    else:
+        formatted = f"${value:,.0f}"
+
+    return f"~{formatted}" if approx else formatted
 
 
-def fmt_percent(value: Optional[float], decimals: int = 1) -> str:
+# =====================================================
+# Percent Formatter (Confidence-Aware)
+# =====================================================
+
+def fmt_percent(
+    value: Optional[float],
+    confidence: Optional[float] = None,
+    suppressed: bool = False,
+    decimals: int = 1,
+) -> str:
+    """
+    Canonical percent formatter (Phase 3).
+
+    Rules:
+    - Low confidence → reduced precision + approximation marker
+    - Suppressed values are explicit
+    """
+    if suppressed:
+        return "Insufficient data"
+
     if value is None:
-        return "-"
+        return "—"
+
     try:
-        return f"{value*100:.{decimals}f}%"
+        value = float(value)
     except Exception:
-        return "-"
+        return "—"
+
+    approx = _is_low_confidence(confidence)
+
+    used_decimals = 0 if approx else decimals
+    formatted = f"{value * 100:.{used_decimals}f}%"
+
+    return f"~{formatted}" if approx else formatted
