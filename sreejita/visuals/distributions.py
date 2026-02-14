@@ -1,17 +1,34 @@
-import seaborn as sns
+import json
 import matplotlib.pyplot as plt
-from sreejita.core.schema import detect_schema
+import pandas as pd
+from pathlib import Path
+
+_MIN_SAMPLE_SIZE = 20
 
 
-def hist(df, col, out):
-    schema = detect_schema(df)
+def hist(df: pd.DataFrame, col: str, out: Path):
+    out.parent.mkdir(parents=True, exist_ok=True)
 
-    # Only allow true numeric measures
-    if col not in schema["numeric_measures"]:
-        return
+    if col not in df or df[col].dropna().empty:
+        return None
 
-    fig, ax = plt.subplots(figsize=(5, 3))
-    sns.histplot(df[col].dropna(), kde=True, ax=ax)
-    ax.set_title(f"Distribution — {col}")
-    fig.savefig(out, dpi=300, bbox_inches="tight")
+    if len(df) < _MIN_SAMPLE_SIZE:
+        return None
+
+    if df[col].std() == 0:
+        return None
+
+    plt.figure(figsize=(5, 3))
+    plt.hist(df[col].dropna(), bins=20, alpha=0.7)
+    plt.title(f"Distribution of {col}")
+    plt.tight_layout()
+    plt.savefig(out)
     plt.close()
+
+    meta = {
+        "status": "rendered",
+        "reason": "ok",
+        "sample_size": len(df),
+        "inference_type": "direct",
+    }
+    out.with_suffix(".json").write_text(json.dumps(meta, indent=2))
