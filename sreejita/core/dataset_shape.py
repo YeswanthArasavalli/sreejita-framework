@@ -124,6 +124,18 @@ def detect_dataset_shape(df: pd.DataFrame) -> Dict[str, Any]:
                 "clinical event attributes present"
             )
 
+        # -------------------------------------------------
+        # CLINICAL TEMPORAL SIGNAL (WEAK BUT IMPORTANT)
+        # -------------------------------------------------
+        # Only boost if patient identifiers already exist.
+        # Prevents false positives in non-clinical datasets.
+        if score[DatasetShape.ROW_LEVEL_CLINICAL] > 0.0:
+            if any(("date" in c or "time" in c) for c in cols):
+                score[DatasetShape.ROW_LEVEL_CLINICAL] += 0.10
+                reasons[DatasetShape.ROW_LEVEL_CLINICAL].append(
+                    "clinical temporal attributes present"
+                )
+
         # =================================================
         # AGGREGATED OPERATIONAL
         # =================================================
@@ -190,7 +202,7 @@ def detect_dataset_shape(df: pd.DataFrame) -> Dict[str, Any]:
             )
 
         # =================================================
-        # CONFLICT RESOLUTION (CRITICAL FIX)
+        # CONFLICT RESOLUTION (STRUCTURE-FIRST)
         # =================================================
 
         if score[DatasetShape.ROW_LEVEL_CLINICAL] >= 0.6:
