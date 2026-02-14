@@ -33,7 +33,7 @@ class DecisionExplanation:
     decision_type: str = "domain_detection"
     selected_domain: Optional[str] = None
     confidence: float = 0.0
-    status: str = "insufficient_data"
+    status: str = "insufficient_data"  # detected | ambiguous | insufficient_data
 
     # -------------------------------------------------
     # EXPLANATION & TRACEABILITY
@@ -65,7 +65,7 @@ class DecisionExplanation:
     )
 
     # =================================================
-    # SAFETY & NORMALIZATION
+    # SAFETY & NORMALIZATION (PHASE 2)
     # =================================================
     def __post_init__(self):
 
@@ -126,18 +126,13 @@ class DecisionExplanation:
             _add_rule("status_normalized")
 
         # -----------------------------
-        # Evidence extraction
+        # Evidence presence check
         # -----------------------------
-        has_signal_evidence = bool(self.signals)
-        has_score_evidence = bool(self.domain_scores)
-        has_alternative_evidence = bool(self.alternatives)
-        has_evidence = (
-            has_signal_evidence or has_score_evidence or has_alternative_evidence
-        )
+        has_evidence = bool(self.signals or self.domain_scores or self.alternatives)
 
-        # Confidence cannot exist without evidence
         if self.confidence > 0.0 and not has_evidence:
             self.confidence = 0.0
+            self.status = "insufficient_data"
             _add_rule("downgrade_no_evidence_for_confidence")
 
         # -----------------------------
@@ -146,42 +141,34 @@ class DecisionExplanation:
         signal_strength = None
 
         if "signal_strength" in self.signals:
+            signal_strength = _safe_float(self.signals.get("signal_strength"), None)
+        elif isinstance(self.signals.get("kpi"), dict):
             signal_strength = _safe_float(
-                self.signals.get("signal_strength"), default=None
-            )
-        elif (
-            isinstance(self.signals.get("kpi"), dict)
-            and "signal_strength" in self.signals.get("kpi", {})
-        ):
-            signal_strength = _safe_float(
-                self.signals["kpi"].get("signal_strength"), default=None
+                self.signals["kpi"].get("signal_strength"), None
             )
 
-        if (
-            signal_strength is not None
-            and signal_strength <= 0.0
-            and self.status != "insufficient_data"
-        ):
+        if signal_strength is not None and signal_strength <= 0.0:
+            self.confidence = 0.0
             self.status = "insufficient_data"
-            _add_rule("downgrade_non_positive_signal_strength")
+            _add_rule("blocked_due_to_non_positive_signal_strength")
 
         # -----------------------------
-        # Confidence / status consistency
+        # Confidence ↔ Status consistency
         # -----------------------------
-        # detected requires high confidence
-        if self.status == "detected" and self.confidence < 0.75:
+        if self.status == "detected" and self.confidence < 0.6:
             self.status = "ambiguous"
-            _add_rule("downgrade_detected_requires_high_confidence")
+            _add_rule("downgrade_detected_due_to_low_confidence")
 
-        # ambiguous downgrades under very low confidence
-        if self.status == "ambiguous" and self.confidence < 0.30:
+        if self.status == "ambiguous" and self.confidence < 0.3:
             self.status = "insufficient_data"
-            _add_rule("downgrade_ambiguous_under_low_confidence")
+            _add_rule("downgrade_ambiguous_due_to_very_low_confidence")
 
-        # status cannot exceed domain availability
         if self.status in {"detected", "ambiguous"} and not self.selected_domain:
             self.status = "insufficient_data"
             _add_rule("downgrade_missing_selected_domain")
+
+        if self.status == "insufficient_data":
+            self.confidence = min(self.confidence, 0.2)
 
     # =================================================
     # SERIALIZATION (STREAMLIT / JSON SAFE)
@@ -206,3 +193,35 @@ class DecisionExplanation:
     # =================================================
     def attach_engine(self, engine: Any) -> None:
         self.engine = engine
+
+    # =================================================
+    # DEBUG / LOGGING
+    # =================================================
+    def __str__(self) -> str:
+        return (
+            f"[Decision {self.decision_id}] "
+            f"{self.decision_type} → {self.selected_domain} "
+            f"(confidence={self.confidence:.2f}, status={self.status})"
+        )
+
+    __repr__ = __str__
+
+
+# =====================================================
+# POLICY DECISION (CANONICAL)
+# =====================================================
+
+@dataclass
+class PolicyDecision:
+    """
+    Canonical policy evaluation result.
+
+    GUARANTEES:
+    - Minimal and explicit
+    - Serializable
+    - No hidden actions or side effects
+    - Safe for UI, CLI, batch, and audit
+    """
+
+    status: str  # allowed | allowed_with_warning | blocked
+    reasons: List[str] = field(default_factory=list)
