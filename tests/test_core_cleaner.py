@@ -4,9 +4,7 @@ import pandas as pd
 
 from sreejita.core.cleaner import clean_dataframe
 
-
 REQUIRED = {"value", "confidence", "signal_strength", "data_coverage"}
-
 
 def test_non_dataframe_input_is_guarded_and_returns_safe_summary():
     """Before fix: None input failed on df.copy()."""
