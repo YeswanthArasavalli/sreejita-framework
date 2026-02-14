@@ -3,83 +3,95 @@
 # Sreejita Framework v3.6.x
 # =====================================================
 
+from typing import Dict, Any, Optional, Tuple
+
 from .column_normalizer import normalize_columns
 from .intent_scoring import score_domain_intent
 
-from sreejita.core.column_roles import (
+from sreejita.domains.utils.column_semantics import (
     infer_column_roles,
     summarize_roles,
     compute_generic_penalty,
 )
 
+
 # -------------------------------------------------
-# SAFETY CONSTANTS (SEMANTIC)
+# SAFETY CONSTANTS (SEMANTIC, NOT TUNABLE)
 # -------------------------------------------------
 
 MIN_CONFIDENCE_FLOOR = 0.30     # minimum evidence sufficiency
 MAX_CONFIDENCE_CAP = 1.0
 
-# Rule evidence is dominant
-INTENT_WEIGHT = 0.25
+# Rule evidence dominates; intent is supporting only
 RULE_WEIGHT = 0.75
+INTENT_WEIGHT = 0.25
 
 INTENT_SCORE_MAX = 20.0
 AMBIGUITY_DELTA = 0.10
 
 
-# -------------------------------------------------
+# =====================================================
 # DOMAIN SCORING ENGINE (AUTHORITATIVE)
-# -------------------------------------------------
+# =====================================================
 
-def compute_domain_scores(df, rule_based_results):
+def compute_domain_scores(
+    df,
+    rule_based_results: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
     """
     Compute evidence sufficiency scores per domain.
 
     PHASE-4 GUARANTEES:
-    - No domain is introduced by intent
-    - Rule evidence is primary
-    - Scores are explainable, not probabilistic
+    - Intent NEVER introduces domains
+    - Rule-based evidence is dominant
+    - Scores are explainable (component-based)
+    - Generic schemas are penalized conservatively
     """
 
     if not rule_based_results:
         return {}
 
     # -----------------------------------------
-    # SCHEMA ANALYSIS (GENERICITY PENALTY)
+    # DOMAIN-AGNOSTIC SCHEMA ANALYSIS
     # -----------------------------------------
     role_map = infer_column_roles(df)
     role_summary = summarize_roles(role_map)
     generic_penalty = compute_generic_penalty(role_summary)
 
     normalized_cols, _ = normalize_columns(df.columns)
-    final_scores = {}
+    final_scores: Dict[str, Dict[str, Any]] = {}
 
     for domain, rb in rule_based_results.items():
-        rule_conf = float(rb.get("confidence", 0.0))
+        try:
+            rule_conf = float(rb.get("confidence", 0.0))
+        except Exception:
+            rule_conf = 0.0
+
         rule_conf = max(0.0, min(rule_conf, 1.0))
 
         # 🚫 No rule evidence → no candidacy
         if rule_conf <= 0.0:
             continue
 
-        # -------------------------------
+        # -------------------------------------
         # INTENT (SUPPORTING SIGNAL ONLY)
-        # -------------------------------
+        # -------------------------------------
         intent_score, intent_signals = score_domain_intent(
             normalized_cols, domain
         )
 
-        intent_conf = min(
-            max(intent_score / INTENT_SCORE_MAX, 0.0),
-            1.0,
+        intent_conf = max(
+            0.0,
+            min(intent_score / INTENT_SCORE_MAX, 1.0),
         )
 
+        # Weak intent does not contribute
         if intent_conf < 0.15:
             intent_conf = 0.0
 
-        # -------------------------------
+        # -------------------------------------
         # EVIDENCE SUFFICIENCY SCORE
-        # -------------------------------
+        # -------------------------------------
         combined = (
             RULE_WEIGHT * rule_conf +
             INTENT_WEIGHT * intent_conf
@@ -88,7 +100,7 @@ def compute_domain_scores(df, rule_based_results):
         combined -= generic_penalty
 
         combined = round(
-            min(MAX_CONFIDENCE_CAP, max(combined, 0.0)),
+            max(0.0, min(combined, MAX_CONFIDENCE_CAP)),
             3,
         )
 
@@ -109,18 +121,23 @@ def compute_domain_scores(df, rule_based_results):
     return final_scores
 
 
-# -------------------------------------------------
-# DOMAIN CANDIDATE RESOLUTION (NO ACCEPTANCE)
-# -------------------------------------------------
+# =====================================================
+# DOMAIN CANDIDATE RESOLUTION (NON-FORCING)
+# =====================================================
 
-def select_best_domain(domain_scores):
+def select_best_domain(
+    domain_scores: Dict[str, Dict[str, Any]]
+) -> Tuple[Optional[str], float, Dict[str, Any]]:
     """
-    Identify best domain candidate WITHOUT forcing selection.
+    Identify the best domain candidate WITHOUT forcing acceptance.
 
-    Returns:
+    RETURNS:
     - domain: Optional[str]
     - confidence: float
     - explanation: Dict[str, Any]
+
+    PHASE-4 RULE:
+    Detection ≠ acceptance. Router decides acceptance.
     """
 
     if not domain_scores:
@@ -138,7 +155,7 @@ def select_best_domain(domain_scores):
     top_conf = float(top_meta.get("confidence", 0.0))
 
     # -------------------------------------------------
-    # BELOW SUFFICIENCY FLOOR → UNKNOWN
+    # BELOW EVIDENCE FLOOR → UNKNOWN
     # -------------------------------------------------
     if top_conf < MIN_CONFIDENCE_FLOOR:
         return None, top_conf, {
