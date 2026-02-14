@@ -40,20 +40,15 @@ def _safe_score(value: Any) -> float:
         out = float(value)
     except (TypeError, ValueError):
         return 0.0
-
     if not math.isfinite(out):
         return 0.0
-
     return max(0.0, min(out, 1.0))
 
 
 def _metric_payload(value: Any, data_coverage: float) -> Dict[str, float]:
-    """
-    Standardized KPI-like payload for safe downstream consumption.
-    """
+    """Standardized KPI-like payload for safe downstream consumption."""
     safe_value = _safe_score(value)
     safe_coverage = _safe_score(data_coverage)
-
     return {
         "value": safe_value,
         "confidence": safe_value,
@@ -198,12 +193,10 @@ def detect_dataset_shape(df: pd.DataFrame) -> Dict[str, Any]:
         # CONFLICT RESOLUTION (CRITICAL FIX)
         # =================================================
 
-        # Patient-level data dominates ALL other interpretations
         if score[DatasetShape.ROW_LEVEL_CLINICAL] >= 0.6:
             score[DatasetShape.FINANCIAL_SUMMARY] *= 0.25
             score[DatasetShape.AGGREGATED_OPERATIONAL] *= 0.5
 
-        # Quality metrics override aggregated ops
         if score[DatasetShape.QUALITY_METRICS] >= 0.6:
             score[DatasetShape.AGGREGATED_OPERATIONAL] *= 0.5
 
@@ -216,19 +209,20 @@ def detect_dataset_shape(df: pd.DataFrame) -> Dict[str, Any]:
         }
 
         # =================================================
-        # FINAL DECISION (CONSERVATIVE)
+        # FINAL DECISION (SEMANTICALLY CORRECT)
         # =================================================
 
         best_shape = max(score, key=score.get)
         best_score = _safe_score(score[best_shape])
 
-        if best_score < 0.6:
+        # UNKNOWN only when there is literally no signal
+        if best_score <= 0.0:
             return {
                 "shape": DatasetShape.UNKNOWN,
-                "confidence": round(best_score, 2),
+                "confidence": 0.0,
                 "signals": {k.value: v for k, v in score.items()},
                 "signal_metrics": signal_metrics,
-                "kpi": _metric_payload(best_score, data_coverage),
+                "kpi": _metric_payload(0.0, data_coverage),
                 "reason": "No dominant structural pattern",
             }
 
