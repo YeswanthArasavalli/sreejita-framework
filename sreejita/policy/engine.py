@@ -26,15 +26,16 @@ class PolicyEngine:
         # (legacy / test contract)
         # -----------------------------------------
         if getattr(decision, "selected_domain", None) == "unknown":
-            return PolicyDecision(
+            decision_obj = PolicyDecision(
                 status="blocked",
                 reasons=["Domain explicitly marked as unknown"],
-                explanations=[
-                    "Policy decision: this item was blocked because the domain "
-                    "was explicitly marked as unknown, which is restricted under "
-                    "current governance rules."
-                ],
             )
+            decision_obj.explanations = [
+                "Policy decision: this item was blocked because the domain "
+                "was explicitly marked as unknown, which is restricted under "
+                "current governance rules."
+            ]
+            return decision_obj
 
         # -----------------------------------------
         # Rule 1: Insufficient data → allow but warn
@@ -77,8 +78,10 @@ class PolicyEngine:
                 )
             )
 
-        return PolicyDecision(
+        decision_obj = PolicyDecision(
             status=status,
             reasons=reasons,
-            explanations=explanations,
         )
+        decision_obj.explanations = explanations
+        return decision_obj
+
