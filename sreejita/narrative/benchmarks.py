@@ -4,147 +4,141 @@
 UNIVERSAL EXECUTIVE BENCHMARKS & GUARDRAILS
 ==========================================
 
-This file defines UNIVERSAL, DOMAIN-AGNOSTIC benchmarks
-used only for EXECUTIVE NARRATIVE CONTEXT.
+This module provides NON-BINDING, DOMAIN-AGNOSTIC
+contextual language used to support executive narratives.
 
-RULES:
+GUARANTEES:
+- No analytics or scoring logic
+- No mutation of observed values
 - No domain-specific KPIs
-- No scoring logic
-- No hard dependencies
-- Safe for all domains (Healthcare, Retail, Finance, HR, etc.)
+- No decision thresholds
+- Narrative context only
 
-This file answers:
-→ “What generally looks good / risky at an executive level?”
+Benchmarks in this file:
+- Do NOT evaluate performance
+- Do NOT enforce policy
+- Do NOT influence confidence
 """
 
 from typing import Dict, Any, Optional
 
 
 # =====================================================
-# 1. CAPABILITY-LEVEL NARRATIVE BENCHMARKS
+# 1. CAPABILITY-LEVEL NARRATIVE CONTEXT
 # =====================================================
 
-CAPABILITY_BENCHMARKS: Dict[str, Dict[str, Any]] = {
+CAPABILITY_BENCHMARKS: Dict[str, Dict[str, str]] = {
     "VOLUME": {
-        "low": "Low activity volume relative to historical norms.",
-        "normal": "Activity volume within expected operating range.",
-        "high": "Sustained high activity volume requiring capacity review.",
+        "low": "Activity volume appears lower relative to typical operating patterns.",
+        "normal": "Activity volume appears within an expected operating range.",
+        "high": "Sustained activity volume may warrant capacity review.",
     },
     "TIME_FLOW": {
-        "good": "Process cycle times are within acceptable ranges.",
-        "warning": "Process delays indicate emerging flow constraints.",
-        "critical": "Sustained delays pose operational risk.",
+        "good": "Process cycle times appear within acceptable ranges.",
+        "warning": "Observed delays suggest emerging flow constraints.",
+        "critical": "Sustained delays may present operational risk.",
     },
     "COST": {
         "efficient": "Costs appear aligned with delivered value.",
-        "warning": "Cost growth may outpace output or outcomes.",
-        "critical": "Cost structure presents material financial risk.",
+        "warning": "Cost growth may be increasing faster than outcomes.",
+        "critical": "Cost structure may present material financial risk.",
     },
     "QUALITY": {
-        "stable": "Quality indicators are stable and controlled.",
-        "warning": "Early signs of quality degradation detected.",
-        "critical": "Quality performance requires immediate attention.",
+        "stable": "Quality indicators appear stable.",
+        "warning": "Early signs of quality degradation may be present.",
+        "critical": "Quality performance may require immediate attention.",
     },
     "VARIANCE": {
-        "low": "Performance variation is well-controlled.",
-        "high": "Significant variance suggests standardization gaps.",
+        "low": "Performance variation appears well-controlled.",
+        "high": "Significant variation may indicate standardization gaps.",
     },
     "ACCESS": {
-        "adequate": "Access levels appear sufficient for demand.",
+        "adequate": "Access levels appear sufficient for current demand.",
         "limited": "Access constraints may affect outcomes or experience.",
     },
 }
 
 
 # =====================================================
-# 2. EXECUTIVE CONFIDENCE BANDS (UNIVERSAL)
+# 2. CONFIDENCE CONTEXT LABELS (DESCRIPTIVE ONLY)
 # =====================================================
 
-CONFIDENCE_BANDS = [
-    (0.85, "HIGH", "🟢"),
-    (0.70, "MEDIUM", "🟡"),
-    (0.00, "LOW", "🔴"),
+CONFIDENCE_CONTEXT = [
+    (0.85, "High confidence context"),
+    (0.70, "Moderate confidence context"),
+    (0.00, "Limited confidence context"),
 ]
 
 
-def classify_confidence(confidence: Optional[float]) -> Dict[str, Any]:
+def describe_confidence(confidence: Optional[float]) -> Dict[str, Any]:
     """
-    Converts a numeric confidence (0–1) into
-    an executive-friendly label and icon.
+    Returns a descriptive confidence context.
+
+    This function does NOT score, judge, or gate decisions.
     """
     if confidence is None:
-        return {"label": "UNKNOWN", "icon": "⚪"}
+        return {
+            "label": "Unknown confidence context",
+            "value": None,
+        }
 
-    for threshold, label, icon in CONFIDENCE_BANDS:
-        if confidence >= threshold:
+    try:
+        value = float(confidence)
+    except (TypeError, ValueError):
+        return {
+            "label": "Unknown confidence context",
+            "value": None,
+        }
+
+    for threshold, label in CONFIDENCE_CONTEXT:
+        if value >= threshold:
             return {
                 "label": label,
-                "icon": icon,
-                "value": round(confidence, 2),
+                "value": round(value, 2),
             }
 
-    return {"label": "LOW", "icon": "🔴", "value": round(confidence, 2)}
+    return {
+        "label": "Limited confidence context",
+        "value": round(value, 2),
+    }
 
 
 # =====================================================
-# 3. GOVERNANCE GUARDRAILS (UNIVERSAL SAFETY)
+# 3. GOVERNANCE REFERENCES (NON-OPERATIVE)
 # =====================================================
 
-GOVERNANCE_LIMITS: Dict[str, Dict[str, Any]] = {
+GOVERNANCE_REFERENCES: Dict[str, Dict[str, str]] = {
     "COST": {
-        "soft_cap_multiplier": 1.3,
-        "hard_cap_multiplier": 2.0,
-        "source": "Executive financial governance heuristic",
+        "source": "Executive financial governance reference",
     },
     "TIME_FLOW": {
-        "soft_cap_multiplier": 1.5,
-        "hard_cap_multiplier": 2.5,
-        "source": "Operational resilience guideline",
+        "source": "Operational resilience reference",
     },
 }
 
 
-def apply_governance_cap(
-    capability: str,
-    baseline: Optional[float],
-    observed: Optional[float],
-) -> Optional[float]:
+def get_governance_reference(capability: str) -> str:
     """
-    Applies a universal governance cap to prevent
-    narrative distortion due to extreme values.
+    Returns a human-readable governance reference.
+
+    This is contextual only and does not impose limits.
     """
-    if baseline is None or observed is None:
-        return observed
-
-    limits = GOVERNANCE_LIMITS.get(capability)
-    if not limits:
-        return observed
-
-    hard = limits.get("hard_cap_multiplier")
-    if hard:
-        return min(observed, baseline * hard)
-
-    return observed
+    return GOVERNANCE_REFERENCES.get(capability, {}).get("source", "")
 
 
 # =====================================================
-# 4. SAFE ACCESS HELPERS (CANONICAL API)
+# 4. SAFE ACCESS HELPERS (CANONICAL, READ-ONLY)
 # =====================================================
 
-def get_capability_benchmark(capability: str) -> Dict[str, str]:
+def get_capability_context(capability: str) -> Dict[str, str]:
     """
-    Returns narrative benchmark text for a capability.
-    """
-    return CAPABILITY_BENCHMARKS.get(capability, {})
+    Returns descriptive narrative context for a capability.
 
-
-def get_governance_source(capability: str) -> str:
+    Never returns evaluative or binding language.
     """
-    Returns governance reference source for a capability.
-    """
-    return GOVERNANCE_LIMITS.get(capability, {}).get("source", "")
+    return CAPABILITY_BENCHMARKS.get(capability, {}).copy()
 
 
 # =====================================================
-# END OF FILE — UNIVERSAL EXECUTIVE CONTEXT LAYER
+# END OF FILE — CONTEXT ONLY, NO ENFORCEMENT
 # =====================================================
