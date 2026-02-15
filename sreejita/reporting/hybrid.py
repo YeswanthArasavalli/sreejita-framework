@@ -7,7 +7,7 @@ from sreejita.reporting.base import BaseReport
 
 
 # =====================================================
-# HYBRID REPORT ENGINE — UNIVERSAL (FINAL, LOCKED)
+# HYBRID REPORT ENGINE — UNIVERSAL (FINAL, GOVERNED)
 # Sreejita Framework v3.6
 # =====================================================
 
@@ -20,7 +20,7 @@ class HybridReport(BaseReport):
     - Deterministic ordering
     - No intelligence computation
     - Explicit handling of UNKNOWN / AMBIGUOUS / SUPPRESSED domains
-    - No silent failures
+    - Policy decisions are visible and auditable
     """
 
     name = "hybrid"
@@ -61,7 +61,7 @@ class HybridReport(BaseReport):
             else:
                 f.write(
                     "## Executive Summary\n\n"
-                    "_No executive summary generated due to low-confidence or incomplete data._\n\n"
+                    "_No executive summary generated due to confidence or data coverage constraints._\n\n"
                     "---\n\n"
                 )
 
@@ -81,32 +81,25 @@ class HybridReport(BaseReport):
     # GLOBAL EXECUTIVE
     # -------------------------------------------------
     def _write_global_executive(self, f, executive: Dict[str, Any]):
+        f.write("## Executive Summary\n\n")
+
         brief = executive.get("executive_brief")
         board = executive.get("board_readiness") or {}
-        trend = executive.get("board_readiness_trend") or {}
-
-        f.write("## Executive Summary\n\n")
 
         if isinstance(brief, str) and brief.strip():
             f.write(f"{brief.strip()}\n\n")
         else:
             f.write(
-                "_Executive summary is limited due to data confidence constraints._\n\n"
+                "_Executive summary is constrained by current confidence coverage._\n\n"
             )
 
         if board:
             f.write("### Board Readiness\n")
             f.write(f"- **Score:** {board.get('score','—')} / 100\n")
-            f.write(f"- **Status:** {board.get('band','—')}\n")
+            f.write(f"- **Status:** {board.get('band','—')}\n\n")
 
-        if trend:
-            f.write(
-                f"- **Trend:** {trend.get('trend','→')} "
-                f"(Prev: {trend.get('previous_score','—')}, "
-                f"Current: {trend.get('current_score','—')})\n"
-            )
-
-        f.write("\n---\n\n")
+        self._write_policy_notes(f, executive)
+        f.write("---\n\n")
 
     # -------------------------------------------------
     # SUB-DOMAIN EXECUTIVE
@@ -123,23 +116,23 @@ class HybridReport(BaseReport):
             if not isinstance(payload, dict):
                 continue
 
+            f.write(f"### {sub.replace('_',' ').title()}\n\n")
+
             brief = payload.get("executive_brief")
             board = payload.get("board_readiness") or {}
-
-            f.write(f"### {sub.replace('_',' ').title()}\n\n")
 
             if isinstance(brief, str) and brief.strip():
                 f.write(f"{brief.strip()}\n\n")
             else:
-                f.write(
-                    "_No sub-domain executive summary generated due to limited data._\n\n"
-                )
+                f.write("_No sub-domain executive summary generated._\n\n")
 
             if board:
                 f.write(
                     f"- **Board Readiness Score:** {board.get('score','—')} / 100  \n"
                     f"- **Status:** {board.get('band','—')}\n\n"
                 )
+
+            self._write_policy_notes(f, payload)
 
         f.write("---\n\n")
 
@@ -152,9 +145,6 @@ class HybridReport(BaseReport):
         status = result.get("status")
         confidence = result.get("confidence")
 
-        # =================================================
-        # SUPPRESSED / AMBIGUOUS DOMAIN — EXPLICIT
-        # =================================================
         if status in {
             "ambiguous",
             "insufficient_data",
@@ -163,72 +153,20 @@ class HybridReport(BaseReport):
         }:
             f.write("### Analysis Status\n\n")
             f.write(f"- **Status:** {status.replace('_',' ').title()}\n")
-            f.write(f"- **Confidence:** {confidence if confidence is not None else '—'}\n\n")
+            f.write(f"- **Confidence Context:** {confidence if confidence is not None else '—'}\n\n")
 
-            limitations = result.get("executive", {}).get("limitations")
-            if limitations:
-                f.write("**Why this analysis was limited:**\n")
-                for l in limitations:
-                    f.write(f"- {l}\n")
-                f.write("\n")
-
+            self._write_policy_notes(f, result)
             f.write("---\n\n")
             return
 
-        # ---------------- KPIs ----------------
-        raw_kpis = result.get("kpis") or {}
-        kpis = {
-            k: v for k, v in raw_kpis.items()
-            if isinstance(k, str)
-            and not k.startswith("_")
-            and k not in {"sub_domains", "primary_sub_domain"}
-        }
-
-        f.write("### Key Metrics\n")
-
-        if kpis:
-            f.write("| Metric | Value |\n")
-            f.write("| :--- | :--- |\n")
-            for i, (k, v) in enumerate(kpis.items()):
-                if i >= 9:
-                    break
-                f.write(
-                    f"| {k.replace('_',' ').title()} | {self._format_value(k, v)} |\n"
-                )
-            f.write("\n")
-        else:
-            f.write(
-                "_No key metrics are shown due to insufficient or low-confidence data._\n\n"
-            )
-
-        # ---------------- VISUALS ----------------
-        visuals = [
-            v for v in (result.get("visuals") or [])
-            if isinstance(v, dict) and v.get("path")
-        ][:6]
-
-        f.write("### Visual Evidence\n")
-
-        if visuals:
-            for vis in visuals:
-                caption = vis.get("caption", "Visual evidence")
-                path = vis.get("path")
-                try:
-                    conf = int(float(vis.get("confidence", 0)) * 100)
-                except Exception:
-                    conf = 0
-                f.write(f"![{caption}]({path})\n")
-                f.write(f"> {caption} (Confidence: {conf}%)\n\n")
-        else:
-            f.write(
-                "_No visual evidence generated due to data sparsity or confidence thresholds._\n\n"
-            )
+        # ---------------- EVIDENCE ----------------
+        f.write("### Evidence\n\n")
+        self._write_kpis(f, result)
+        self._write_visuals(f, result)
 
         # ---------------- INSIGHTS ----------------
+        f.write("### Key Insights\n\n")
         insights = [i for i in (result.get("insights") or []) if isinstance(i, dict)][:5]
-
-        f.write("### Key Insights\n")
-
         if insights:
             for ins in insights:
                 f.write(
@@ -237,32 +175,34 @@ class HybridReport(BaseReport):
                 )
             f.write("\n")
         else:
-            f.write(
-                "_No insights generated due to limited evidence._\n\n"
-            )
+            f.write("_No insights generated due to limited evidence._\n\n")
 
         # ---------------- RECOMMENDATIONS ----------------
-        recs = [
-            r for r in (result.get("recommendations") or [])
-            if isinstance(r, dict)
-        ][:5]
-
-        f.write("### Recommendations\n")
-
+        f.write("### Recommendations\n\n")
+        recs = [r for r in (result.get("recommendations") or []) if isinstance(r, dict)][:5]
         if recs:
             for r in recs:
                 f.write(
                     f"- **{r.get('priority','')}** — {r.get('action','')} "
-                    f"(Owner: {r.get('owner','—')}, "
-                    f"Timeline: {r.get('timeline','—')})\n"
+                    f"(Owner: {r.get('owner','—')}, Timeline: {r.get('timeline','—')})\n"
                 )
             f.write("\n")
         else:
-            f.write(
-                "_No recommendations generated due to limited actionable evidence._\n\n"
-            )
+            f.write("_No recommendations surfaced under current confidence and policy constraints._\n\n")
 
+        self._write_policy_notes(f, result)
         f.write("---\n\n")
+
+    # -------------------------------------------------
+    # POLICY NOTES
+    # -------------------------------------------------
+    def _write_policy_notes(self, f, payload: Dict[str, Any]):
+        explanations = payload.get("explanations") or []
+        if explanations:
+            f.write("### Policy Notes\n\n")
+            for e in explanations:
+                f.write(f"- {e}\n")
+            f.write("\n")
 
     # -------------------------------------------------
     # HEADER & FOOTER
@@ -301,6 +241,48 @@ class HybridReport(BaseReport):
                 return f"{v / 1_000:.1f}K"
             return f"{v:.2f}"
         return str(v)
+
+    def _write_kpis(self, f, result: Dict[str, Any]):
+        raw_kpis = result.get("kpis") or {}
+        kpis = {
+            k: v for k, v in raw_kpis.items()
+            if isinstance(k, str)
+            and not k.startswith("_")
+            and k not in {"sub_domains", "primary_sub_domain"}
+        }
+
+        if kpis:
+            f.write("| Metric | Value |\n")
+            f.write("| :--- | :--- |\n")
+            for i, (k, v) in enumerate(kpis.items()):
+                if i >= 9:
+                    break
+                f.write(
+                    f"| {k.replace('_',' ').title()} | {self._format_value(k, v)} |\n"
+                )
+            f.write("\n")
+        else:
+            f.write("_No key metrics shown due to data or confidence limits._\n\n")
+
+    def _write_visuals(self, f, result: Dict[str, Any]):
+        visuals = [
+            v for v in (result.get("visuals") or [])
+            if isinstance(v, dict) and v.get("path")
+        ][:6]
+
+        f.write("\n")
+        if visuals:
+            for vis in visuals:
+                caption = vis.get("caption", "Visual evidence")
+                path = vis.get("path")
+                try:
+                    conf = int(float(vis.get("confidence", 0)) * 100)
+                except Exception:
+                    conf = 0
+                f.write(f"![{caption}]({path})\n")
+                f.write(f"> {caption} (Confidence Context: {conf}%)\n\n")
+        else:
+            f.write("_No visual evidence generated under current confidence thresholds._\n\n")
 
 
 # =====================================================
