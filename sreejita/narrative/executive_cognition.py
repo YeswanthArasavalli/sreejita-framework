@@ -5,7 +5,8 @@
 
 from typing import Dict, Any, List
 from sreejita.core.capabilities import Capability
-
+from sreejita.narrative.language_tiers import confidence_tone, confidence_tier
+from sreejita.narrative.uncertainty_phrases import uncertainty_phrase
 
 # =====================================================
 # DOMAIN EXECUTIVE PROFILES (POLICY ONLY)
@@ -242,7 +243,6 @@ def compute_board_readiness_score(
         "band": risk["label"],
     }
 
-
 # =====================================================
 # EXECUTIVE BRIEF (NON-HALLUCINATING)
 # =====================================================
@@ -252,23 +252,108 @@ def build_executive_brief(
     insight_block: Dict[str, Any],
     sub_domain: str,
     domain: str,
+    recommendations: List[Dict[str, Any]] = None,
 ) -> str:
+
+    confidence = _extract_composite_confidence(insight_block)
+    uncertainty = uncertainty_phrase(confidence)
+    policy_statement = _policy_visibility_statement(board_score)
 
     if not isinstance(board_score, int):
         return (
-            "An executive assessment could not be generated due to "
-            "insufficient high-confidence data."
+            f"This review summarizes current performance in the {domain} domain. "
+            "Evidence: board readiness is not displayed because confidence-gated KPI coverage is insufficient. "
+            "Interpretation: executive direction is intentionally constrained until confidence coverage improves. "
+            f"{uncertainty} "
+            f"{policy_statement} "
+            f"{_recommendation_explainability_statement(recommendations or [], confidence)}"
         )
 
-    risk = derive_risk_level(board_score)
-
-    return (
+        return (
         f"This review summarizes current performance in the {domain} domain. "
-        f"Overall readiness is assessed as {risk['label'].lower()}, "
-        f"with a Board Readiness Score of {risk['score']} out of 100."
+        f"{_compose_evidence_statement(domain, board_score)} "
+        f"{_compose_interpretation_statement(confidence)} "
+        f"{uncertainty} "
+        f"{policy_statement} "
+        f"{_recommendation_explainability_statement(recommendations or [], confidence)}"
     )
 
 
+
+
+def _extract_composite_confidence(insight_block: Dict[str, Any]) -> float:
+    composite = (insight_block or {}).get("composite", {})
+    try:
+        value = float(composite.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    if value < 0:
+        return 0.0
+    if value > 1:
+        return 1.0
+    return round(value, 2)
+
+
+def _policy_visibility_statement(board_score: Any) -> str:
+    if isinstance(board_score, int):
+        return (
+            "Policy visibility: board readiness is shown because the confidence gate "
+            "(at least two KPI confidence values >= 0.60) was satisfied."
+        )
+    return (
+        "Policy visibility: board readiness is suppressed because the confidence gate "
+        "(at least two KPI confidence values >= 0.60) was not satisfied."
+    )
+
+
+def _compose_evidence_statement(domain: str, board_score: int) -> str:
+    risk = derive_risk_level(board_score)
+    return (
+        f"Evidence: current {domain} signals yield a Board Readiness Score of "
+        f"{risk['score']} out of 100, mapping to a {risk['label'].lower()} readiness band."
+    )
+
+
+def _compose_interpretation_statement(confidence: float) -> str:
+    tone = confidence_tone(confidence)
+    tier = confidence_tier(confidence)
+
+    if tier == "high":
+        return (
+            "Interpretation: this is a clear executive view based on consistently high-confidence insights."
+        )
+    if tier == "moderate":
+        return (
+            "Interpretation: this is a measured executive view; patterns are credible but should be tracked closely."
+        )
+
+    return (
+        f"Interpretation: this is a {tone} executive view; decisions should prioritize reversible actions "
+        "until confidence strengthens."
+    )
+
+
+def _recommendation_explainability_statement(
+    recommendations: List[Dict[str, Any]],
+    confidence: float,
+) -> str:
+    valid = [r for r in (recommendations or []) if isinstance(r, dict)]
+    if not valid:
+        return (
+            "Recommendation policy: no recommendation is presented because no structured, attributable "
+            "recommendation input was provided."
+        )
+
+    avg_conf = round(
+        sum(float(r.get("confidence", 0.6)) for r in valid) / len(valid),
+        2,
+    )
+    combined = round((avg_conf + confidence) / 2, 2)
+    return (
+        "Recommendation policy: recommendations are retained as provided and are presented as directional "
+        f"actions aligned to available evidence (combined confidence context: {combined:.2f})."
+    )
+    
 # =====================================================
 # RECOMMENDATION NORMALIZATION (SAFE)
 # =====================================================
@@ -316,6 +401,7 @@ def build_executive_payload(
         insight_block,
         kpis.get("primary_sub_domain", "unknown"),
         domain,
+        recommendations,
     )
 
     return {
