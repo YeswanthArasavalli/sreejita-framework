@@ -1,6 +1,6 @@
 # =====================================================
-# GENERIC FALLBACK DOMAIN — UNIVERSAL (HARDENED)
-# Sreejita Framework
+# GENERIC FALLBACK DOMAIN — UNIVERSAL (FINAL, LOCKED)
+# Sreejita Framework v3.6
 # =====================================================
 
 import pandas as pd
@@ -23,9 +23,9 @@ class GenericDomain(BaseDomain):
     """
     Universal fallback domain.
 
-    DESIGN PRINCIPLES:
+    HARD GUARANTEES:
     - Never competes with real domains
-    - Never infers business meaning
+    - Never infers business semantics
     - Never blocks reporting
     - Always executive-safe
     """
@@ -34,103 +34,42 @@ class GenericDomain(BaseDomain):
     description = "Generic dataset analysis (fallback mode)"
 
     # -------------------------------------------------
-    # PREPROCESS (PASS-THROUGH)
+    # PREPROCESS (PASS-THROUGH, SAFE)
     # -------------------------------------------------
     def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
-        return df
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("GenericDomain expects a DataFrame")
+        return df.copy(deep=False)
 
     # -------------------------------------------------
-    # SAFE RUN WRAPPER (STABLE OUTPUT CONTRACT)
-    # -------------------------------------------------
-    def run(
-        self,
-        df: pd.DataFrame,
-        *,
-        visual_output_dir: Optional[Path] = None,
-    ) -> Dict[str, Any]:
-
-        result: Dict[str, Any] = {
-            "domain": self.name,
-            "kpis": {},
-            "visuals": [],
-            "insights": [],
-            "recommendations": [],
-        }
-
-        try:
-            if not self.validate_data(df):
-                return result
-
-            df = df.copy(deep=False)
-            df = self.preprocess(df)
-            if df is None or df.empty:
-                return result
-
-            kpis = self.calculate_kpis(df) or {}
-            if not isinstance(kpis, dict):
-                kpis = {}
-
-            if "_confidence" not in kpis:
-                kpis["_confidence"] = {}
-
-            self._last_kpis = kpis
-
-            insights = self.generate_insights(df, kpis) or []
-            recommendations = self.generate_recommendations(df, kpis, insights) or []
-
-            visuals: List[Dict[str, Any]] = []
-            if visual_output_dir is not None:
-                try:
-                    visuals = self.generate_visuals(df, visual_output_dir)
-                    visuals = self.ensure_minimum_visuals(
-                        visuals, df, visual_output_dir
-                    )
-                except Exception:
-                    visuals = self.ensure_minimum_visuals(
-                        [], df, visual_output_dir
-                    )
-
-            result.update(
-                {
-                    "kpis": kpis,
-                    "visuals": visuals,
-                    "insights": insights,
-                    "recommendations": recommendations,
-                }
-            )
-        except Exception:
-            return result
-
-        return result
-
-    # -------------------------------------------------
-    # KPI ENGINE (MINIMAL, STRUCTURAL ONLY)
+    # KPI ENGINE (STRUCTURAL ONLY)
     # -------------------------------------------------
     def calculate_kpis(self, df: pd.DataFrame) -> Dict[str, Any]:
         volume = int(len(df))
+
+        numeric_cols = df.select_dtypes(include="number").shape[1]
+        date_cols = df.select_dtypes(
+            include=["datetime", "datetimetz"]
+        ).shape[1]
+
+        completeness = float(1 - df.isna().mean().mean())
 
         kpis: Dict[str, Any] = {
             "primary_sub_domain": "generic",
             "sub_domains": {"generic": 1.0},
             "record_count": volume,
             "column_count": int(len(df.columns)),
-            "numeric_column_count": int(
-                df.select_dtypes(include="number").shape[1]
-            ),
-            "date_column_count": int(
-                df.select_dtypes(include=["datetime", "datetimetz"]).shape[1]
-            ),
-            "data_completeness": round(
-                float(1 - df.isna().mean().mean()), 3
-            ),
+            "numeric_column_count": int(numeric_cols),
+            "date_column_count": int(date_cols),
+            "data_completeness": round(completeness, 3),
         }
 
         if volume < 20:
             kpis["data_warning"] = (
-                "Very small dataset — results are indicative only"
+                "Very small dataset — insights are indicative only"
             )
 
-        # Conservative, flat confidence
+        # Conservative, flat confidence (explicit)
         kpis["_confidence"] = {
             k: 0.35 for k in kpis if not k.startswith("_")
         }
@@ -139,7 +78,7 @@ class GenericDomain(BaseDomain):
         return kpis
 
     # -------------------------------------------------
-    # VISUALS (GUARANTEED, LOW PRIORITY)
+    # VISUAL ENGINE (LOW-PRIORITY, GUARANTEED)
     # -------------------------------------------------
     def generate_visuals(
         self,
@@ -147,10 +86,13 @@ class GenericDomain(BaseDomain):
         output_dir: Path,
     ) -> List[Dict[str, Any]]:
 
-        output_dir.mkdir(parents=True, exist_ok=True)
         visuals: List[Dict[str, Any]] = []
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Dataset Size
+        # -----------------------------
+        # Visual 1 — Dataset Size
+        # -----------------------------
         try:
             fig, ax = plt.subplots(figsize=(6, 4))
             ax.bar(["Records"], [len(df)])
@@ -163,15 +105,18 @@ class GenericDomain(BaseDomain):
 
             visuals.append({
                 "path": str(path),
-                "caption": "Dataset record count (fallback evidence).",
+                "caption": "Total number of records (fallback evidence).",
                 "importance": 0.25,
                 "confidence": 0.4,
                 "sub_domain": "generic",
+                "inference_type": "fallback",
             })
         except Exception:
             pass
 
-        # Column Completeness
+        # -----------------------------
+        # Visual 2 — Column Completeness
+        # -----------------------------
         try:
             completeness = (
                 df.notna().mean()
@@ -182,7 +127,10 @@ class GenericDomain(BaseDomain):
             fig, ax = plt.subplots(figsize=(8, 4))
             completeness.plot(kind="bar", ax=ax)
             ax.set_ylim(0, 1)
-            ax.set_title("Column Completeness (Top Fields)", fontweight="bold")
+            ax.set_title(
+                "Column Completeness (Top Fields)",
+                fontweight="bold",
+            )
             ax.set_ylabel("Completeness Ratio")
 
             path = output_dir / "generic_column_completeness.png"
@@ -191,10 +139,11 @@ class GenericDomain(BaseDomain):
 
             visuals.append({
                 "path": str(path),
-                "caption": "Data completeness overview (fallback evidence).",
+                "caption": "Top column completeness ratios (fallback evidence).",
                 "importance": 0.25,
                 "confidence": 0.4,
                 "sub_domain": "generic",
+                "inference_type": "fallback",
             })
         except Exception:
             pass
@@ -208,7 +157,8 @@ class GenericDomain(BaseDomain):
         self,
         df: pd.DataFrame,
         kpis: Dict[str, Any],
-        *_,
+        *args,
+        **kwargs,
     ) -> List[Dict[str, Any]]:
 
         insights: List[Dict[str, Any]] = [
@@ -218,7 +168,7 @@ class GenericDomain(BaseDomain):
                 "title": "Dataset Not Mapped to a Supported Domain",
                 "so_what": (
                     "The dataset does not strongly match any supported business domain. "
-                    "Analysis is limited to structural signals."
+                    "Analysis is limited to structural characteristics."
                 ),
                 "confidence": 0.4,
             }
@@ -230,8 +180,8 @@ class GenericDomain(BaseDomain):
                 "level": "WARNING",
                 "title": "Low Data Completeness",
                 "so_what": (
-                    "High levels of missing data may limit analytical reliability "
-                    "and decision confidence."
+                    "High levels of missing data may reduce analytical reliability "
+                    "and confidence in interpretation."
                 ),
                 "confidence": 0.45,
             })
@@ -257,7 +207,8 @@ class GenericDomain(BaseDomain):
         df: pd.DataFrame,
         kpis: Dict[str, Any],
         insights: List[Dict[str, Any]],
-        *_,
+        *args,
+        **kwargs,
     ) -> List[Dict[str, Any]]:
 
         return [
@@ -289,7 +240,11 @@ class GenericDomain(BaseDomain):
 class GenericDomainDetector(BaseDomainDetector):
     """
     Absolute fallback detector.
-    NEVER competes with real domains.
+
+    RULE:
+    - Always matches
+    - Always lowest confidence
+    - Never blocks stronger domains
     """
 
     domain_name = "generic"
@@ -297,13 +252,13 @@ class GenericDomainDetector(BaseDomainDetector):
     def detect(self, df: pd.DataFrame) -> DomainDetectionResult:
         return DomainDetectionResult(
             domain="generic",
-            confidence=0.15,   # intentionally LOW
+            confidence=0.15,  # intentionally low
             signals={"fallback": True},
         )
 
 
 # =====================================================
-# REGISTRATION
+# REGISTRATION (AUTHORITATIVE)
 # =====================================================
 
 def register(registry):
