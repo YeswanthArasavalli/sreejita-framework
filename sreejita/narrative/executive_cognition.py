@@ -124,7 +124,15 @@ def format_kpi_name(key: str) -> str:
         name = name.replace(abbr, abbr.upper())
     return name
 
+def _executive_opening_sentence(domain: str, confidence: float) -> str:
+    tier = confidence_tier(confidence)
+    tone = confidence_tone(confidence)
 
+    return (
+        f"{tone.capitalize()} executive assessment of the {domain} domain "
+        "is presented based on current evidence coverage."
+    )
+    
 # =====================================================
 # KPI SELECTION (NO FABRICATION)
 # =====================================================
@@ -261,7 +269,7 @@ def build_executive_brief(
 
     if not isinstance(board_score, int):
         return (
-            f"This review summarizes current performance in the {domain} domain. "
+            f"{_executive_opening_sentence(domain, confidence)} "
             "Evidence: board readiness is not displayed because confidence-gated KPI coverage is insufficient. "
             "Interpretation: executive direction is intentionally constrained until confidence coverage improves. "
             f"{uncertainty} "
@@ -269,15 +277,14 @@ def build_executive_brief(
             f"{_recommendation_explainability_statement(recommendations or [], confidence)}"
         )
 
-        return (
-        f"This review summarizes current performance in the {domain} domain. "
+    return (
+        f"{_executive_opening_sentence(domain, confidence)} "
         f"{_compose_evidence_statement(domain, board_score)} "
         f"{_compose_interpretation_statement(confidence)} "
         f"{uncertainty} "
         f"{policy_statement} "
         f"{_recommendation_explainability_statement(recommendations or [], confidence)}"
     )
-
 
 
 
@@ -315,21 +322,12 @@ def _compose_evidence_statement(domain: str, board_score: int) -> str:
 
 
 def _compose_interpretation_statement(confidence: float) -> str:
-    tone = confidence_tone(confidence)
     tier = confidence_tier(confidence)
-
-    if tier == "high":
-        return (
-            "Interpretation: this is a clear executive view based on consistently high-confidence insights."
-        )
-    if tier == "moderate":
-        return (
-            "Interpretation: this is a measured executive view; patterns are credible but should be tracked closely."
-        )
+    tone = confidence_tone(confidence)
 
     return (
-        f"Interpretation: this is a {tone} executive view; decisions should prioritize reversible actions "
-        "until confidence strengthens."
+        "Interpretation: this represents a "
+        f"{tone} executive view aligned with a {tier}-confidence signal set."
     )
 
 
@@ -338,10 +336,11 @@ def _recommendation_explainability_statement(
     confidence: float,
 ) -> str:
     valid = [r for r in (recommendations or []) if isinstance(r, dict)]
+
     if not valid:
         return (
-            "Recommendation policy: no recommendation is presented because no structured, attributable "
-            "recommendation input was provided."
+            "Recommendation policy: no recommendation is surfaced because no "
+            "attributable, evidence-linked recommendation input was provided."
         )
 
     avg_conf = round(
@@ -349,9 +348,11 @@ def _recommendation_explainability_statement(
         2,
     )
     combined = round((avg_conf + confidence) / 2, 2)
+
     return (
-        "Recommendation policy: recommendations are retained as provided and are presented as directional "
-        f"actions aligned to available evidence (combined confidence context: {combined:.2f})."
+        "Recommendation policy: recommendations are presented because they are "
+        "explicitly linked to upstream signals and meet governance requirements "
+        f"for explainability (combined confidence context: {combined:.2f})."
     )
     
 # =====================================================
