@@ -24,7 +24,7 @@ class BaseDomainDetector:
 
     domain_name: str = "generic"
 
-    def detect(self, df):
+    def detect(self, df) -> "DomainDetectionResult":
         """
         Detect whether the dataset belongs to this domain.
 
