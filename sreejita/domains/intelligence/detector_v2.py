@@ -1,6 +1,6 @@
 # =====================================================
 # DOMAIN INTELLIGENCE — DETECTOR v2.1 (PHASE 4)
-# Sreejita Framework v3.6.x
+# Sreejita Framework v3.6.x (FINAL)
 # =====================================================
 
 from typing import Dict, Any, Optional, Tuple
@@ -22,11 +22,14 @@ from sreejita.domains.utils.column_semantics import (
 MIN_CONFIDENCE_FLOOR = 0.30     # minimum evidence sufficiency
 MAX_CONFIDENCE_CAP = 1.0
 
-# Rule evidence dominates; intent is supporting only
+# Rule evidence MUST dominate
 RULE_WEIGHT = 0.75
 INTENT_WEIGHT = 0.25
 
-INTENT_SCORE_MAX = 20.0
+# Intent normalization (aligned with intent_scoring.py)
+INTENT_SCORE_MAX = 10.0
+
+# Ambiguity tolerance
 AMBIGUITY_DELTA = 0.10
 
 
@@ -44,8 +47,8 @@ def compute_domain_scores(
     PHASE-4 GUARANTEES:
     - Intent NEVER introduces domains
     - Rule-based evidence is dominant
-    - Scores are explainable (component-based)
-    - Generic schemas are penalized conservatively
+    - Generic schemas are penalized
+    - Scores are explainable & decomposable
     """
 
     if not rule_based_results:
@@ -59,9 +62,14 @@ def compute_domain_scores(
     generic_penalty = compute_generic_penalty(role_summary)
 
     normalized_cols, _ = normalize_columns(df.columns)
+
     final_scores: Dict[str, Dict[str, Any]] = {}
 
     for domain, rb in rule_based_results.items():
+
+        # -------------------------------------
+        # RULE CONFIDENCE (PRIMARY SIGNAL)
+        # -------------------------------------
         try:
             rule_conf = float(rb.get("confidence", 0.0))
         except Exception:
@@ -69,34 +77,36 @@ def compute_domain_scores(
 
         rule_conf = max(0.0, min(rule_conf, 1.0))
 
-        # 🚫 No rule evidence → no candidacy
+        # 🚫 No rule evidence → domain not eligible
         if rule_conf <= 0.0:
             continue
 
         # -------------------------------------
-        # INTENT (SUPPORTING SIGNAL ONLY)
+        # INTENT CONFIDENCE (SUPPORTING ONLY)
         # -------------------------------------
         intent_score, intent_signals = score_domain_intent(
             normalized_cols, domain
         )
 
+        # Normalize intent score to [0,1]
         intent_conf = max(
             0.0,
             min(intent_score / INTENT_SCORE_MAX, 1.0),
         )
 
-        # Weak intent does not contribute
+        # Weak intent is ignored completely
         if intent_conf < 0.15:
             intent_conf = 0.0
 
         # -------------------------------------
-        # EVIDENCE SUFFICIENCY SCORE
+        # COMBINED EVIDENCE SCORE
         # -------------------------------------
         combined = (
             RULE_WEIGHT * rule_conf +
             INTENT_WEIGHT * intent_conf
         )
 
+        # Penalize overly generic schemas
         combined -= generic_penalty
 
         combined = round(
@@ -104,6 +114,9 @@ def compute_domain_scores(
             3,
         )
 
+        # -------------------------------------
+        # FINAL DOMAIN SCORE PAYLOAD
+        # -------------------------------------
         final_scores[domain] = {
             "confidence": combined,
             "components": {
@@ -113,7 +126,7 @@ def compute_domain_scores(
             },
             "signals": {
                 "rule_based": rb.get("signals", {}),
-                "intent_based": intent_signals or {},
+                "intent_based": intent_signals,
                 "schema_roles": role_summary,
             },
         }
@@ -129,7 +142,7 @@ def select_best_domain(
     domain_scores: Dict[str, Dict[str, Any]]
 ) -> Tuple[Optional[str], float, Dict[str, Any]]:
     """
-    Identify the best domain candidate WITHOUT forcing acceptance.
+    Identify the strongest domain candidate WITHOUT forcing acceptance.
 
     RETURNS:
     - domain: Optional[str]
@@ -202,6 +215,7 @@ def select_best_domain(
         "domain": top_domain,
         "confidence": round(top_conf, 3),
         "components": top_meta.get("components", {}),
+        "signals": top_meta.get("signals", {}),
         "all_domain_scores": {
             d: m.get("confidence", 0.0)
             for d, m in domain_scores.items()
