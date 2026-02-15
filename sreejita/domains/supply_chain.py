@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
+
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # governance: non-interactive backend
 import matplotlib.pyplot as plt
+
 from pathlib import Path
 from typing import Dict, Any, List, Set, Optional
 from matplotlib.ticker import FuncFormatter
@@ -11,48 +13,71 @@ from sreejita.core.column_resolver import resolve_column
 from .base import BaseDomain
 from sreejita.domains.contracts import BaseDomainDetector, DomainDetectionResult
 
+
 # =====================================================
 # HELPERS — SUPPLY CHAIN (DOMAIN-SAFE, GOVERNED)
 # =====================================================
 
 def _safe_div(n: Optional[float], d: Optional[float]) -> Optional[float]:
     """
-    Safe division helper.
+    Governance-safe division.
 
-    GUARANTEES:
+    Guarantees:
     - Never raises
-    - Returns None on invalid input
+    - Returns None for zero, NaN, or invalid inputs
     - Explicit float coercion
     """
     try:
-        if d in (0, None) or pd.isna(d):
+        if n is None or d is None:
             return None
-        return float(n) / float(d)
+        if pd.isna(n) or pd.isna(d):
+            return None
+        if float(d) == 0.0:
+            return None
+        val = float(n) / float(d)
+        if np.isnan(val) or np.isinf(val):
+            return None
+        return val
     except Exception:
         return None
+
+
+def _safe_mean(series: Optional[pd.Series]) -> Optional[float]:
+    """
+    Governance-safe mean.
+
+    Guarantees:
+    - Graceful degradation
+    - Numeric coercion
+    - Returns None if insufficient signal
+    """
+    if series is None or not isinstance(series, pd.Series):
+        return None
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return None
+    return float(s.mean())
 
 
 def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
     """
     Supply Chain–safe time column detector.
 
-    SUPPORTED SEMANTICS:
-    - Order dates
-    - Ship dates
+    Supported semantics (ordered by operational relevance):
     - Delivery / receipt dates
+    - Ship dates
+    - Order dates
     - Generic date / timestamp
 
-    DESIGN PRINCIPLES:
-    - Semantic preference (logistics-aware)
+    Design principles:
+    - Logistics-aware preference
     - No dataset assumptions
-    - Safe fallback only
-    - Never mutates df
+    - No dataframe mutation
+    - Returns None if confidence is weak
     """
-
     if df is None or df.empty:
         return None
 
-    # Ordered by operational relevance in supply chain
     candidates = [
         "delivery_date",
         "delivered_date",
@@ -73,9 +98,10 @@ def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
                 sample = df[col].dropna().iloc[:5]
                 if sample.empty:
                     continue
-                pd.to_datetime(sample, errors="raise")
-                return col
-            except (ValueError, TypeError):
+                parsed = pd.to_datetime(sample, errors="coerce")
+                if parsed.notna().sum() >= 3:
+                    return col
+            except Exception:
                 continue
 
     return None
@@ -83,6 +109,7 @@ def _detect_time_column(df: pd.DataFrame) -> Optional[str]:
 # =====================================================
 # SUPPLY CHAIN DOMAIN (UNIVERSAL 10/10)
 # =====================================================
+
 class SupplyChainDomain(BaseDomain):
     name = "supply_chain"
     description = "Universal Supply Chain Intelligence (Planning, Inventory, Logistics, Resilience)"
@@ -185,38 +212,25 @@ class SupplyChainDomain(BaseDomain):
         # -------------------------------------------------
         # DATETIME NORMALIZATION
         # -------------------------------------------------
-        date_keys = {
-            "order_date",
-            "ship_date",
-            "delivery_date",
-            "promised_date",
-        }
-
-        for key in date_keys:
+        for key in ("order_date", "ship_date", "delivery_date", "promised_date"):
             col = self.cols.get(key)
             if col and col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors="coerce")
 
-        for key in ["processing_time", "packing_time"]:
+        # Operational time columns
+        for key in ("processing_time", "packing_time"):
             col = self.cols.get(key)
             if col and col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
+        # Canonical time sort (if available)
         if self.time_col and self.time_col in df.columns:
             df = df.sort_values(self.time_col)
 
         # -------------------------------------------------
-        # NUMERIC NORMALIZATION (SAFE)
+        # NUMERIC NORMALIZATION (SAFE, NON-DESTRUCTIVE)
         # -------------------------------------------------
-        numeric_keys = {
-            "inventory",
-            "cost",
-            "distance",
-            "weight",
-            "co2",
-        }
-
-        for key in numeric_keys:
+        for key in ("inventory", "cost", "distance", "weight", "co2"):
             col = self.cols.get(key)
             if col and col in df.columns:
                 if df[col].dtype == object:
@@ -228,7 +242,7 @@ class SupplyChainDomain(BaseDomain):
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
         # -------------------------------------------------
-        # DATA COMPLETENESS (RAW METRICS ONLY)
+        # DATA COMPLETENESS (RAW SIGNALS ONLY)
         # -------------------------------------------------
         raw_signal_keys = {
             "inventory",
@@ -242,8 +256,8 @@ class SupplyChainDomain(BaseDomain):
         }
 
         present = sum(
-            1 for k, v in self.cols.items()
-            if k in raw_signal_keys and v
+            1 for k in raw_signal_keys
+            if self.cols.get(k)
         )
 
         self.data_completeness = round(
@@ -253,7 +267,7 @@ class SupplyChainDomain(BaseDomain):
 
         return df
 
-     # -------------------------------------------------
+    # -------------------------------------------------
     # SAFE RUN WRAPPER (STABLE OUTPUT CONTRACT)
     # -------------------------------------------------
     def run(
@@ -291,7 +305,7 @@ class SupplyChainDomain(BaseDomain):
             if not isinstance(kpis, dict):
                 kpis = {}
 
-            if kpis and "_confidence" not in kpis:
+            if "_confidence" not in kpis:
                 kpis["_confidence"] = {}
 
             self._last_kpis = kpis
@@ -306,15 +320,11 @@ class SupplyChainDomain(BaseDomain):
                 try:
                     visuals = self.generate_visuals(df, visual_output_dir)
                     visuals = self.ensure_minimum_visuals(
-                        visuals,
-                        df,
-                        visual_output_dir,
+                        visuals, df, visual_output_dir
                     )
                 except Exception:
                     visuals = self.ensure_minimum_visuals(
-                        [],
-                        df,
-                        visual_output_dir,
+                        [], df, visual_output_dir
                     )
 
             result.update(
@@ -342,6 +352,7 @@ class SupplyChainDomain(BaseDomain):
         - Confidence-tagged KPIs
         - No hardcoded assumptions
         - Proxy metrics explicitly tagged
+        - Graceful degradation
         """
     
         if df is None or df.empty:
@@ -351,7 +362,7 @@ class SupplyChainDomain(BaseDomain):
         volume = int(len(df))
     
         # -------------------------------------------------
-        # SUB-DOMAIN DEFINITIONS
+        # SUB-DOMAIN DEFINITIONS (CANONICAL)
         # -------------------------------------------------
         sub_domains = {
             "planning": "Planning & Flow Stability",
@@ -371,15 +382,15 @@ class SupplyChainDomain(BaseDomain):
         }
     
         # -------------------------------------------------
-        # SAFE HELPERS
+        # SAFE HELPERS (COLUMN-BASED, GOVERNED)
         # -------------------------------------------------
-        def safe_sum(col):
+        def safe_sum(col: Optional[str]) -> Optional[float]:
             if not col or col not in df.columns:
                 return None
             s = pd.to_numeric(df[col], errors="coerce")
             return float(s.sum()) if s.notna().any() else None
     
-        def safe_mean(col):
+        def safe_mean(col: Optional[str]) -> Optional[float]:
             if not col or col not in df.columns:
                 return None
             s = pd.to_numeric(df[col], errors="coerce")
@@ -388,32 +399,58 @@ class SupplyChainDomain(BaseDomain):
         # =================================================
         # PLANNING & FLOW STABILITY
         # =================================================
-        planning = []
+        planning: List[str] = []
     
-        total_orders = df[c["order_id"]].nunique() if c.get("order_id") else volume
+        total_orders = (
+            df[c["order_id"]].nunique()
+            if c.get("order_id") and c["order_id"] in df.columns
+            else volume
+        )
         kpis["planning_total_orders"] = total_orders
         planning.append("planning_total_orders")
     
-        if c.get("order_date"):
-            kpis["planning_order_frequency"] = total_orders / max(df[c["order_date"]].nunique(), 1)
+        if c.get("order_date") and c["order_date"] in df.columns:
+            unique_days = df[c["order_date"]].nunique()
+            kpis["planning_order_frequency"] = _safe_div(
+                total_orders, max(unique_days, 1)
+            )
             planning.append("planning_order_frequency")
     
-        # --- Lead Time (Date-based OR Operational proxy) ---
+        # --- Lead Time (DATE-BASED OR OPERATIONAL PROXY) ---
         lead_days = None
-        
-        if c.get("order_date") and c.get("delivery_date"):
-            lead_days = (df[c["delivery_date"]] - df[c["order_date"]]).dt.days
-        
+    
+        if (
+            c.get("order_date")
+            and c.get("delivery_date")
+            and c["order_date"] in df.columns
+            and c["delivery_date"] in df.columns
+        ):
+            lead_days = (
+                df[c["delivery_date"]] - df[c["order_date"]]
+            ).dt.days
+    
         elif c.get("processing_time") or c.get("packing_time"):
-            proc = pd.to_numeric(df.get(c.get("processing_time")), errors="coerce") if c.get("processing_time") else 0
-            pack = pd.to_numeric(df.get(c.get("packing_time")), errors="coerce") if c.get("packing_time") else 0
-            lead_days = (proc.fillna(0) + (pack.fillna(0) / 60)) / 24  # hours → days
-        
+            proc = (
+                pd.to_numeric(df[c["processing_time"]], errors="coerce")
+                if c.get("processing_time") and c["processing_time"] in df.columns
+                else 0
+            )
+            pack = (
+                pd.to_numeric(df[c["packing_time"]], errors="coerce")
+                if c.get("packing_time") and c["packing_time"] in df.columns
+                else 0
+            )
+            # hours → days (explicit proxy)
+            lead_days = (proc.fillna(0) + pack.fillna(0)) / 24.0
+    
         if lead_days is not None:
-            lead_days = lead_days.dropna()
+            lead_days = pd.to_numeric(lead_days, errors="coerce").dropna()
             if not lead_days.empty:
-                kpis["planning_avg_lead_time"] = lead_days.mean()
-                kpis["planning_lead_time_variability"] = _safe_div(lead_days.std(), lead_days.mean())
+                mean_lead = lead_days.mean()
+                kpis["planning_avg_lead_time"] = float(mean_lead)
+                kpis["planning_lead_time_variability"] = _safe_div(
+                    lead_days.std(), mean_lead
+                )
                 planning.extend([
                     "planning_avg_lead_time",
                     "planning_lead_time_variability",
@@ -422,58 +459,75 @@ class SupplyChainDomain(BaseDomain):
         # =================================================
         # INVENTORY & WORKING CAPITAL
         # =================================================
-        inventory = []
+        inventory: List[str] = []
     
-        if c.get("inventory"):
-            inv = pd.to_numeric(df[c["inventory"]], errors="coerce")
-            kpis["inventory_avg_stock"] = inv.mean()
-            kpis["inventory_stock_variability"] = _safe_div(inv.std(), inv.mean())
-            inventory.extend([
-                "inventory_avg_stock",
-                "inventory_stock_variability",
-            ])
-    
-            kpis["inventory_zero_stock_ratio"] = (inv <= 0).mean()
-            inventory.append("inventory_zero_stock_ratio")
+        if c.get("inventory") and c["inventory"] in df.columns:
+            inv = pd.to_numeric(df[c["inventory"]], errors="coerce").dropna()
+            if not inv.empty:
+                mean_inv = inv.mean()
+                kpis["inventory_avg_stock"] = float(mean_inv)
+                kpis["inventory_stock_variability"] = _safe_div(
+                    inv.std(), mean_inv
+                )
+                kpis["inventory_zero_stock_ratio"] = float((inv <= 0).mean())
+                inventory.extend([
+                    "inventory_avg_stock",
+                    "inventory_stock_variability",
+                    "inventory_zero_stock_ratio",
+                ])
     
         # =================================================
         # LOGISTICS & FULFILLMENT
         # =================================================
-        logistics = []
+        logistics: List[str] = []
     
-        if c.get("delivery_date") and c.get("promised_date"):
+        if (
+            c.get("delivery_date")
+            and c.get("promised_date")
+            and c["delivery_date"] in df.columns
+            and c["promised_date"] in df.columns
+        ):
             valid = df[c["delivery_date"]].notna() & df[c["promised_date"]].notna()
             if valid.any():
-                on_time = df.loc[valid, c["delivery_date"]] <= df.loc[valid, c["promised_date"]]
-                kpis["logistics_on_time_delivery_rate"] = on_time.mean()
+                on_time = (
+                    df.loc[valid, c["delivery_date"]]
+                    <= df.loc[valid, c["promised_date"]]
+                )
+                kpis["logistics_on_time_delivery_rate"] = float(on_time.mean())
                 logistics.append("logistics_on_time_delivery_rate")
     
-        if c.get("distance"):
-            kpis["logistics_avg_distance"] = safe_mean(c["distance"])
-            logistics.append("logistics_avg_distance")
-
-        elif c.get("status"):
+        elif c.get("status") and c["status"] in df.columns:
             status = df[c["status"]].astype(str).str.lower()
             delivered = status.str.contains("deliver", na=False)
-            returned = status.str.contains("return|fail|cancel", na=False)
-            if (delivered | returned).any():
-                kpis["logistics_on_time_delivery_rate"] = delivered.mean()
+            resolved = status.str.contains("deliver|return|fail|cancel", na=False)
+            if resolved.any():
+                kpis["logistics_on_time_delivery_rate"] = float(delivered.mean())
                 logistics.append("logistics_on_time_delivery_rate")
+    
+        if c.get("distance") and c["distance"] in df.columns:
+            kpis["logistics_avg_distance"] = safe_mean(c["distance"])
+            logistics.append("logistics_avg_distance")
     
         # =================================================
         # COST EFFICIENCY
         # =================================================
-        cost = []
+        cost: List[str] = []
     
-        if c.get("cost"):
+        if c.get("cost") and c["cost"] in df.columns:
             total_cost = safe_sum(c["cost"])
             kpis["cost_total_cost"] = total_cost
-            cost.append("cost_total_cost")
-    
             kpis["cost_avg_cost_per_record"] = safe_mean(c["cost"])
-            cost.append("cost_avg_cost_per_record")
+            cost.extend([
+                "cost_total_cost",
+                "cost_avg_cost_per_record",
+            ])
     
-        if c.get("cost") and c.get("distance"):
+        if (
+            c.get("cost")
+            and c.get("distance")
+            and c["cost"] in df.columns
+            and c["distance"] in df.columns
+        ):
             kpis["cost_cost_per_distance"] = _safe_div(
                 safe_sum(c["cost"]),
                 safe_sum(c["distance"]),
@@ -483,44 +537,49 @@ class SupplyChainDomain(BaseDomain):
         # =================================================
         # RESILIENCE & DEPENDENCY
         # =================================================
-        resilience = []
+        resilience: List[str] = []
     
-        if c.get("supplier"):
+        if c.get("supplier") and c["supplier"] in df.columns:
             counts = df[c["supplier"]].value_counts()
-            kpis["resilience_supplier_count"] = int(counts.size)
-            kpis["resilience_top_supplier_share"] = float(counts.iloc[0] / counts.sum())
-            resilience.extend([
-                "resilience_supplier_count",
-                "resilience_top_supplier_share",
-            ])
+            if not counts.empty:
+                kpis["resilience_supplier_count"] = int(counts.size)
+                kpis["resilience_top_supplier_share"] = float(
+                    counts.iloc[0] / counts.sum()
+                )
+                resilience.extend([
+                    "resilience_supplier_count",
+                    "resilience_top_supplier_share",
+                ])
     
-        if c.get("carrier"):
+        if c.get("carrier") and c["carrier"] in df.columns:
             counts = df[c["carrier"]].value_counts()
-            kpis["resilience_carrier_count"] = int(counts.size)
-            kpis["resilience_top_carrier_share"] = float(counts.iloc[0] / counts.sum())
-            resilience.extend([
-                "resilience_carrier_count",
-                "resilience_top_carrier_share",
-            ])
-
+            if not counts.empty:
+                kpis["resilience_carrier_count"] = int(counts.size)
+                kpis["resilience_top_carrier_share"] = float(
+                    counts.iloc[0] / counts.sum()
+                )
+                resilience.extend([
+                    "resilience_carrier_count",
+                    "resilience_top_carrier_share",
+                ])
+    
         # =================================================
         # SUSTAINABILITY (PROXY-AWARE)
         # =================================================
-        sustainability = []
+        sustainability: List[str] = []
     
-        if c.get("co2"):
+        if c.get("co2") and c["co2"] in df.columns:
             kpis["sustainability_avg_co2"] = safe_mean(c["co2"])
             sustainability.append("sustainability_avg_co2")
     
-        elif c.get("distance"):
+        elif c.get("distance") and c["distance"] in df.columns:
             kpis["sustainability_emissions_proxy"] = _safe_div(
-                safe_sum(c["distance"]),
-                volume,
+                safe_sum(c["distance"]), volume
             )
             sustainability.append("sustainability_emissions_proxy")
-
+    
         # -------------------------------------------------
-        # DOMAIN → KPI MAP
+        # DOMAIN → KPI MAP (AUTHORITATIVE)
         # -------------------------------------------------
         kpis["_domain_kpi_map"] = {
             "planning": planning,
@@ -532,21 +591,23 @@ class SupplyChainDomain(BaseDomain):
         }
     
         # -------------------------------------------------
-        # KPI CONFIDENCE
+        # KPI CONFIDENCE (STRUCTURAL, NOT JUDGMENTAL)
         # -------------------------------------------------
         for key, val in kpis.items():
             if key.startswith("_") or not isinstance(val, (int, float)):
                 continue
     
-            base = 0.7
+            base = 0.70
             if volume < 100:
                 base -= 0.15
             if "proxy" in key:
-                base -= 0.1
+                base -= 0.10
             if "rate" in key or "variability" in key:
                 base += 0.05
     
-            kpis["_confidence"][key] = round(max(0.4, min(0.9, base)), 2)
+            kpis["_confidence"][key] = round(
+                max(0.40, min(0.90, base)), 2
+            )
     
         self._last_kpis = kpis
         return kpis
@@ -562,10 +623,11 @@ class SupplyChainDomain(BaseDomain):
         Supply Chain Visual Engine (v1.0)
     
         GUARANTEES:
-        - ≥9 candidate visuals per sub-domain (when data allows)
-        - Evidence-only (no thresholds, no judgement)
+        - Evidence-only visuals (no thresholds, no judgement)
+        - KPI-backed (single source of truth)
+        - No dataframe mutation
         - No trimming here (report layer decides)
-        - KPI-backed & confidence-aware
+        - Graceful degradation
         """
     
         visuals: List[Dict[str, Any]] = []
@@ -582,15 +644,15 @@ class SupplyChainDomain(BaseDomain):
             self._last_kpis = kpis
     
         domain_map = kpis.get("_domain_kpi_map", {})
-        record_count = kpis.get("record_count", 0)
+        record_count = int(kpis.get("record_count", 0))
     
         # -------------------------------------------------
-        # VISUAL CONFIDENCE (DATA-DRIVEN)
+        # VISUAL CONFIDENCE (DATA-DRIVEN, NON-JUDGMENTAL)
         # -------------------------------------------------
         if record_count >= 5000:
             visual_conf = 0.85
         elif record_count >= 1000:
-            visual_conf = 0.7
+            visual_conf = 0.70
         else:
             visual_conf = 0.55
     
@@ -625,148 +687,236 @@ class SupplyChainDomain(BaseDomain):
         # =================================================
         # PLANNING — FLOW & DEMAND
         # =================================================
-        if "planning" in domain_map and self.time_col:
+        if "planning" in domain_map and self.time_col and self.time_col in df.columns:
+            ts = df.set_index(self.time_col)
+    
             # 1. Order volume trend
             fig, ax = plt.subplots()
-            df.set_index(self.time_col).resample("M").size().plot(ax=ax)
+            ts.resample("M").size().plot(ax=ax)
             ax.set_title("Order Volume Over Time")
-            save(fig, "planning_volume_trend.png", "Demand flow trend", 0.95, "planning", "volume", "time")
+            save(
+                fig,
+                "planning_volume_trend.png",
+                "Observed order volume trend over time",
+                0.95,
+                "planning",
+                "volume",
+                "time",
+            )
     
             # 2. Order volume distribution
             fig, ax = plt.subplots()
-            df.resample("M", on=self.time_col).size().hist(ax=ax, bins=20)
+            ts.resample("M").size().hist(ax=ax, bins=20)
             ax.set_title("Order Volume Distribution")
-            save(fig, "planning_volume_dist.png", "Demand variability", 0.8, "planning", "volume", "distribution")
+            save(
+                fig,
+                "planning_volume_dist.png",
+                "Distribution of observed order volumes",
+                0.80,
+                "planning",
+                "volume",
+                "distribution",
+            )
     
         # =================================================
         # LOGISTICS — FULFILLMENT
         # =================================================
-        if "logistics" in domain_map and c.get("order_date") and c.get("delivery_date"):
-            lead = (df[c["delivery_date"]] - df[c["order_date"]]).dt.days.dropna()
-
+        if (
+            "logistics" in domain_map
+            and c.get("order_date")
+            and c.get("delivery_date")
+            and c["order_date"] in df.columns
+            and c["delivery_date"] in df.columns
+        ):
+            lead = (
+                df[c["delivery_date"]] - df[c["order_date"]]
+            ).dt.days
+            lead = pd.to_numeric(lead, errors="coerce").dropna()
+    
             if lead.nunique() > 3:
                 fig, ax = plt.subplots()
                 lead.hist(ax=ax, bins=20)
                 ax.set_title("Lead Time Distribution")
                 save(
-                    fig, "logistics_lead_dist.png", "Fulfillment time dispersion", 0.95, "logistics", "velocity", "distribution",)
+                    fig,
+                    "logistics_lead_dist.png",
+                    "Observed fulfillment time dispersion",
+                    0.95,
+                    "logistics",
+                    "velocity",
+                    "distribution",
+                )
     
-            # 4. Lead time spread
-            fig, ax = plt.subplots()
-            lead.plot(kind="box", ax=ax)
-            ax.set_title("Lead Time Spread")
-            save(fig, "logistics_lead_box.png", "Delivery variability", 0.9, "logistics", "variability", "spread")
-    
-        if "logistics" in domain_map and c.get("delivery_date") and c.get("promised_date"):
-            
-            # 5. On-time delivery trend (evidence only)
-            on_time = df[c["delivery_date"]] <= df[c["promised_date"]]
-
-            if on_time.nunique() > 1:
                 fig, ax = plt.subplots()
-                on_time.groupby(df[self.time_col].dt.to_period("M")).mean().plot(ax=ax)
+                lead.plot(kind="box", ax=ax)
+                ax.set_title("Lead Time Spread")
+                save(
+                    fig,
+                    "logistics_lead_box.png",
+                    "Observed delivery time variability",
+                    0.90,
+                    "logistics",
+                    "variability",
+                    "spread",
+                )
+    
+        if (
+            "logistics" in domain_map
+            and c.get("delivery_date")
+            and c.get("promised_date")
+            and self.time_col
+            and self.time_col in df.columns
+            and c["delivery_date"] in df.columns
+            and c["promised_date"] in df.columns
+        ):
+            valid = df[c["delivery_date"]].notna() & df[c["promised_date"]].notna()
+            if valid.any():
+                on_time = (
+                    df.loc[valid, c["delivery_date"]]
+                    <= df.loc[valid, c["promised_date"]]
+                )
+    
+                fig, ax = plt.subplots()
+                on_time.groupby(
+                    df.loc[valid, self.time_col].dt.to_period("M")
+                ).mean().plot(ax=ax)
                 ax.set_title("On-Time Delivery Over Time")
-                save(fig, "logistics_otd_trend.png", "Delivery reliability trend", 0.9, "logistics", "reliability", "time",)
+                save(
+                    fig,
+                    "logistics_otd_trend.png",
+                    "Observed delivery reliability trend",
+                    0.90,
+                    "logistics",
+                    "reliability",
+                    "time",
+                )
     
         # =================================================
         # INVENTORY — STOCK POSITION
         # =================================================
-        if "inventory" in domain_map and c.get("inventory"):
-            # 6. Inventory distribution
-            fig, ax = plt.subplots()
-            df[c["inventory"]].hist(ax=ax, bins=20)
-            ax.set_title("Inventory Level Distribution")
-            save(fig, "inventory_dist.png", "Stock dispersion", 0.9, "inventory", "stock", "distribution")
+        if "inventory" in domain_map and c.get("inventory") and c["inventory"] in df.columns:
+            inv = pd.to_numeric(df[c["inventory"]], errors="coerce").dropna()
+            if inv.nunique() > 3:
+                fig, ax = plt.subplots()
+                inv.hist(ax=ax, bins=20)
+                ax.set_title("Inventory Level Distribution")
+                save(
+                    fig,
+                    "inventory_dist.png",
+                    "Observed inventory level dispersion",
+                    0.90,
+                    "inventory",
+                    "stock",
+                    "distribution",
+                )
     
-            # 7. Inventory by category
-            if c.get("category"):
+            if c.get("category") and c["category"] in df.columns:
                 fig, ax = plt.subplots()
                 df.groupby(c["category"])[c["inventory"]].mean().nlargest(10).plot.bar(ax=ax)
                 ax.set_title("Average Inventory by Category")
-                save(fig, "inventory_category.png", "Category stock mix", 0.85, "inventory", "mix", "entity")
+                save(
+                    fig,
+                    "inventory_category.png",
+                    "Category-level inventory mix",
+                    0.85,
+                    "inventory",
+                    "mix",
+                    "entity",
+                )
     
         # =================================================
         # COST — EFFICIENCY
         # =================================================
-        if "cost" in domain_map and c.get("cost"):
-            # 8. Cost distribution
-            fig, ax = plt.subplots()
-            df[c["cost"]].hist(ax=ax, bins=20)
-            ax.set_title("Cost Distribution")
-            ax.xaxis.set_major_formatter(FuncFormatter(human_fmt))
-            save(fig, "cost_dist.png", "Cost variability", 0.9, "cost", "efficiency", "distribution")
+        if "cost" in domain_map and c.get("cost") and c["cost"] in df.columns:
+            cost = pd.to_numeric(df[c["cost"]], errors="coerce").dropna()
+            if cost.nunique() > 3:
+                fig, ax = plt.subplots()
+                cost.hist(ax=ax, bins=20)
+                ax.set_title("Cost Distribution")
+                ax.xaxis.set_major_formatter(FuncFormatter(human_fmt))
+                save(
+                    fig,
+                    "cost_dist.png",
+                    "Observed cost variability",
+                    0.90,
+                    "cost",
+                    "efficiency",
+                    "distribution",
+                )
     
-            # 9. Cost over time
-            if self.time_col:
+            if self.time_col and self.time_col in df.columns:
                 fig, ax = plt.subplots()
                 df.set_index(self.time_col)[c["cost"]].resample("M").sum().plot(ax=ax)
                 ax.set_title("Cost Over Time")
                 ax.yaxis.set_major_formatter(FuncFormatter(human_fmt))
-                save(fig, "cost_trend.png", "Cost trajectory", 0.85, "cost", "efficiency", "time")
+                save(
+                    fig,
+                    "cost_trend.png",
+                    "Observed cost trajectory over time",
+                    0.85,
+                    "cost",
+                    "efficiency",
+                    "time",
+                )
     
         # =================================================
         # RESILIENCE — DEPENDENCY
         # =================================================
-        if "resilience" in domain_map and c.get("supplier"):
-            # 10. Supplier concentration
+        if "resilience" in domain_map and c.get("supplier") and c["supplier"] in df.columns:
             fig, ax = plt.subplots()
             df[c["supplier"]].value_counts().nlargest(10).plot.barh(ax=ax)
             ax.set_title("Supplier Concentration")
-            save(fig, "resilience_supplier.png", "Supplier dependency", 0.9, "resilience", "dependency", "structure")
+            save(
+                fig,
+                "resilience_supplier.png",
+                "Observed supplier dependency structure",
+                0.90,
+                "resilience",
+                "dependency",
+                "structure",
+            )
     
-        if "resilience" in domain_map and c.get("carrier"):
-            # 11. Carrier concentration
+        if "resilience" in domain_map and c.get("carrier") and c["carrier"] in df.columns:
             fig, ax = plt.subplots()
             df[c["carrier"]].value_counts().nlargest(10).plot.barh(ax=ax)
             ax.set_title("Carrier Concentration")
-            save(fig, "resilience_carrier.png", "Carrier dependency", 0.85, "resilience", "dependency", "structure")
+            save(
+                fig,
+                "resilience_carrier.png",
+                "Observed carrier dependency structure",
+                0.85,
+                "resilience",
+                "dependency",
+                "structure",
+            )
     
         # =================================================
         # SUSTAINABILITY — ENVIRONMENTAL SIGNALS
         # =================================================
-        if "sustainability" in domain_map and c.get("co2"):
-            # 12. CO2 distribution
-            fig, ax = plt.subplots()
-            df[c["co2"]].hist(ax=ax, bins=20)
-            ax.set_title("CO₂ Emissions Distribution")
-            save(fig, "sustainability_co2.png", "Emission dispersion", 0.85, "sustainability", "environment", "distribution")
+        if "sustainability" in domain_map and c.get("co2") and c["co2"] in df.columns:
+            co2 = pd.to_numeric(df[c["co2"]], errors="coerce").dropna()
+            if co2.nunique() > 3:
+                fig, ax = plt.subplots()
+                co2.hist(ax=ax, bins=20)
+                ax.set_title("CO₂ Emissions Distribution")
+                save(
+                    fig,
+                    "sustainability_co2.png",
+                    "Observed emissions dispersion",
+                    0.85,
+                    "sustainability",
+                    "environment",
+                    "distribution",
+                )
     
         # -------------------------------------------------
-        # RETURN MANY — REPORT WILL TRIM
+        # RETURN MANY — REPORT LAYER WILL TRIM
         # -------------------------------------------------
         visuals.sort(key=lambda v: v["importance"], reverse=True)
         return visuals
 
+
     # ---------------- COMPOSITE INSIGHTS (THE SMART LAYER) ----------------
-
-    def generate_composite_insights(self, df: pd.DataFrame, kpis: Dict[str, Any]) -> List[Dict[str, Any]]:
-        insights = []
-        
-        otd = kpis.get("otd_rate", 1.0)
-        stockout = kpis.get("stockout_rate", 0.0)
-        lead = kpis.get("avg_lead_time", 0)
-        inventory_lvl = kpis.get("avg_stock", 0)
-
-        # 1. Fulfillment Crisis (Slow Lead Time + Low OTD)
-        if otd < 0.85 and lead > 10:
-            insights.append({
-                "level": "CRITICAL",
-                "title": "Fulfillment Crisis",
-                "so_what": f"Delivery is unreliable ({otd:.1%}) AND slow ({lead:.1f} days). Systemic logistics failure."
-            })
-
-        # 2. Inventory Imbalance (High Stock + High Stockouts)
-        # Assuming 'High Stock' is relative, checking if avg > 0
-        if inventory_lvl > 0 and stockout > 0.15:
-            insights.append({
-                "level": "RISK",
-                "title": "Inventory Imbalance",
-                "so_what": f"You have stock, but {stockout:.1%} of items are OOS. Mismatched demand/supply."
-            })
-
-        return insights
-
-    # ---------------- ATOMIC INSIGHTS ----------------
 
     def generate_insights(
         self,
@@ -777,10 +927,11 @@ class SupplyChainDomain(BaseDomain):
         Supply Chain Composite Insight Engine (v1.0)
     
         GUARANTEES:
-        - ≥7 composite insights per sub-domain
-        - No thresholds or targets
+        - Composite-first logic
+        - Capability-aligned (planning, inventory, logistics, cost, resilience, sustainability)
+        - No thresholds, targets, or benchmarks
         - KPI-relative, evidence-based
-        - Executive-safe language
+        - Executive-safe, non-judgmental language
         - Atomic fallback only if composites missing
         """
     
@@ -789,20 +940,26 @@ class SupplyChainDomain(BaseDomain):
         if not isinstance(kpis, dict):
             return insights
     
-        sub_domains = kpis.get("sub_domains", {}) or {}
+        sub_domains = kpis.get("_domain_kpi_map", {}) or {}
     
         # -------------------------------------------------
-        # KPI SHORTCUTS (SAFE)
+        # KPI SHORTCUTS (SAFE, ALIGNED TO KPI ENGINE)
         # -------------------------------------------------
         lead_avg = kpis.get("planning_avg_lead_time")
         lead_var = kpis.get("planning_lead_time_variability")
+    
         otd = kpis.get("logistics_on_time_delivery_rate")
+    
         inventory_avg = kpis.get("inventory_avg_stock")
         inventory_var = kpis.get("inventory_stock_variability")
+        inventory_zero = kpis.get("inventory_zero_stock_ratio")
+    
         cost_avg = kpis.get("cost_avg_cost_per_record")
         cost_dist = kpis.get("cost_cost_per_distance")
-        top_supplier_share = kpis.get("resilience_top_supplier_share")
-        top_carrier_share = kpis.get("resilience_top_carrier_share")
+    
+        supplier_share = kpis.get("resilience_top_supplier_share")
+        carrier_share = kpis.get("resilience_top_carrier_share")
+    
         co2_avg = kpis.get("sustainability_avg_co2")
         co2_proxy = kpis.get("sustainability_emissions_proxy")
     
@@ -815,43 +972,57 @@ class SupplyChainDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "planning",
                     "title": "Lead Time Baseline Established",
-                    "so_what": "Average lead time provides a baseline for planning and scheduling.",
+                    "so_what": (
+                        "Observed average lead time provides a baseline view of end-to-end flow duration."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "planning",
-                    "title": "Flow Predictability Signal",
-                    "so_what": "Lead time variability indicates the predictability of supply flow.",
+                    "title": "Flow Predictability Context",
+                    "so_what": (
+                        "Lead time variability reflects how predictable the supply flow is across orders."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "planning",
-                    "title": "Planning Horizon Context",
-                    "so_what": "Lead time magnitude informs effective planning horizons.",
-                },
-                {
-                    "level": "INFO",
-                    "sub_domain": "planning",
-                    "title": "Demand–Supply Alignment Signal",
-                    "so_what": "Observed lead times reflect alignment between demand and supply capacity.",
-                },
-                {
-                    "level": "INFO",
-                    "sub_domain": "planning",
-                    "title": "Planning Stability Indicator",
-                    "so_what": "Consistency in lead times supports stable planning assumptions.",
+                    "title": "Planning Horizon Signal",
+                    "so_what": (
+                        "Lead time magnitude informs feasible planning and replenishment horizons."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "planning",
                     "title": "Buffer Strategy Context",
-                    "so_what": "Lead time dispersion provides context for buffer sizing decisions.",
+                    "so_what": (
+                        "Dispersion in lead times provides context for buffer and safety strategies."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "planning",
-                    "title": "Forecast Readiness",
-                    "so_what": "Planning signals are sufficient to support forecast-based decisions.",
+                    "title": "Flow Stability Indicator",
+                    "so_what": (
+                        "Consistency in lead times supports stable planning assumptions."
+                    ),
+                },
+                {
+                    "level": "INFO",
+                    "sub_domain": "planning",
+                    "title": "Demand–Supply Alignment Signal",
+                    "so_what": (
+                        "Observed lead times reflect alignment between demand patterns and supply capacity."
+                    ),
+                },
+                {
+                    "level": "INFO",
+                    "sub_domain": "planning",
+                    "title": "Planning Readiness",
+                    "so_what": (
+                        "Available planning signals support structured flow governance."
+                    ),
                 },
             ])
     
@@ -864,43 +1035,57 @@ class SupplyChainDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "logistics",
                     "title": "Delivery Reliability Signal",
-                    "so_what": "On-time delivery rate reflects service execution consistency.",
+                    "so_what": (
+                        "Observed on-time delivery performance reflects execution consistency."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "logistics",
-                    "title": "Execution Variability Context",
-                    "so_what": "Delivery outcomes vary across orders and time periods.",
+                    "title": "Service Variability Context",
+                    "so_what": (
+                        "Delivery outcomes vary across orders and time periods."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "logistics",
-                    "title": "Service Stability Indicator",
-                    "so_what": "OTD trends can be monitored for operational stability.",
+                    "title": "Fulfillment Stability Indicator",
+                    "so_what": (
+                        "OTD patterns provide insight into fulfillment stability."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "logistics",
-                    "title": "Throughput Performance Signal",
-                    "so_what": "Delivery performance provides insight into throughput capacity.",
+                    "title": "Throughput Performance Context",
+                    "so_what": (
+                        "Delivery performance reflects throughput capability across the network."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "logistics",
-                    "title": "Fulfillment Reliability Coverage",
-                    "so_what": "Data supports ongoing logistics reliability monitoring.",
-                },
-                {
-                    "level": "INFO",
-                    "sub_domain": "logistics",
-                    "title": "Operational Consistency Context",
-                    "so_what": "Execution signals highlight consistency of logistics processes.",
+                    "title": "Execution Consistency Signal",
+                    "so_what": (
+                        "Observed delivery reliability supports logistics process assessment."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "logistics",
                     "title": "Service Governance Readiness",
-                    "so_what": "Logistics data is sufficient for service governance.",
+                    "so_what": (
+                        "Logistics data supports ongoing service governance."
+                    ),
+                },
+                {
+                    "level": "INFO",
+                    "sub_domain": "logistics",
+                    "title": "Fulfillment Monitoring Capability",
+                    "so_what": (
+                        "Available signals enable continuous fulfillment monitoring."
+                    ),
                 },
             ])
     
@@ -912,44 +1097,58 @@ class SupplyChainDomain(BaseDomain):
                 {
                     "level": "INFO",
                     "sub_domain": "inventory",
-                    "title": "Stock Level Baseline",
-                    "so_what": "Average inventory levels establish an availability baseline.",
+                    "title": "Inventory Level Baseline",
+                    "so_what": (
+                        "Average inventory levels establish an availability baseline."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "inventory",
                     "title": "Inventory Variability Context",
-                    "so_what": "Stock variability reflects replenishment and demand alignment.",
+                    "so_what": (
+                        "Stock variability reflects replenishment and demand alignment."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "inventory",
                     "title": "Availability Risk Signal",
-                    "so_what": "Inventory dispersion highlights potential availability risks.",
+                    "so_what": (
+                        "Observed inventory dispersion highlights availability risk exposure."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "inventory",
-                    "title": "Working Capital Exposure",
-                    "so_what": "Inventory levels influence capital tied up in operations.",
+                    "title": "Working Capital Context",
+                    "so_what": (
+                        "Inventory levels influence capital tied up in operations."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "inventory",
                     "title": "Replenishment Cadence Indicator",
-                    "so_what": "Inventory patterns suggest replenishment cadence.",
+                    "so_what": (
+                        "Inventory patterns suggest replenishment cadence stability."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "inventory",
-                    "title": "Stock Governance Context",
-                    "so_what": "Inventory data supports governance and control.",
+                    "title": "Stock Governance Readiness",
+                    "so_what": (
+                        "Inventory signals support governance and control mechanisms."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "inventory",
-                    "title": "Availability Monitoring Readiness",
-                    "so_what": "Inventory signals enable continuous availability monitoring.",
+                    "title": "Availability Monitoring Capability",
+                    "so_what": (
+                        "Data supports continuous availability monitoring."
+                    ),
                 },
             ])
     
@@ -962,92 +1161,120 @@ class SupplyChainDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "cost",
                     "title": "Cost Baseline Established",
-                    "so_what": "Average cost provides a baseline for efficiency analysis.",
+                    "so_what": (
+                        "Average cost provides a baseline for efficiency analysis."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "cost",
                     "title": "Cost Variability Signal",
-                    "so_what": "Cost dispersion indicates efficiency consistency.",
+                    "so_what": (
+                        "Cost dispersion reflects consistency of operational efficiency."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "cost",
-                    "title": "Spend Control Context",
-                    "so_what": "Cost patterns inform spend governance.",
+                    "title": "Spend Structure Context",
+                    "so_what": (
+                        "Cost patterns reveal structural drivers of spend."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "cost",
                     "title": "Efficiency Monitoring Capability",
-                    "so_what": "Cost data supports efficiency monitoring.",
-                },
-                {
-                    "level": "INFO",
-                    "sub_domain": "cost",
-                    "title": "Cost Structure Insight",
-                    "so_what": "Cost signals reflect structural efficiency drivers.",
-                },
-                {
-                    "level": "INFO",
-                    "sub_domain": "cost",
-                    "title": "Operational Cost Coverage",
-                    "so_what": "Cost signals cover operational activity.",
+                    "so_what": (
+                        "Cost data supports ongoing efficiency monitoring."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "cost",
                     "title": "Cost Governance Readiness",
-                    "so_what": "Cost metrics support governance decisions.",
+                    "so_what": (
+                        "Available cost signals support governance decisions."
+                    ),
+                },
+                {
+                    "level": "INFO",
+                    "sub_domain": "cost",
+                    "title": "Operational Coverage Signal",
+                    "so_what": (
+                        "Cost metrics cover core operational activity."
+                    ),
+                },
+                {
+                    "level": "INFO",
+                    "sub_domain": "cost",
+                    "title": "Efficiency Improvement Context",
+                    "so_what": (
+                        "Cost signals provide context for efficiency discussions."
+                    ),
                 },
             ])
     
         # =================================================
         # RESILIENCE — DEPENDENCY & RISK
         # =================================================
-        if "resilience" in sub_domains and (top_supplier_share or top_carrier_share):
+        if "resilience" in sub_domains and (supplier_share is not None or carrier_share is not None):
             insights.extend([
                 {
                     "level": "INFO",
                     "sub_domain": "resilience",
                     "title": "Supplier Dependency Signal",
-                    "so_what": "Supplier concentration reflects dependency exposure.",
+                    "so_what": (
+                        "Supplier concentration reflects dependency exposure."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "resilience",
                     "title": "Carrier Dependency Context",
-                    "so_what": "Carrier concentration indicates logistics dependency.",
+                    "so_what": (
+                        "Carrier concentration indicates logistics dependency."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "resilience",
                     "title": "Structural Risk Indicator",
-                    "so_what": "Dependency patterns inform resilience assessment.",
+                    "so_what": (
+                        "Dependency patterns inform resilience assessment."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "resilience",
-                    "title": "Supply Chain Flexibility Context",
-                    "so_what": "Dependency levels affect flexibility under disruption.",
+                    "title": "Flexibility Context",
+                    "so_what": (
+                        "Dependency levels influence flexibility under disruption."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "resilience",
                     "title": "Diversification Opportunity Signal",
-                    "so_what": "Dependency signals suggest diversification review areas.",
+                    "so_what": (
+                        "Dependency signals suggest diversification review areas."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "resilience",
                     "title": "Risk Governance Readiness",
-                    "so_what": "Data supports risk governance decisions.",
+                    "so_what": (
+                        "Data supports structured risk governance."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "resilience",
                     "title": "Shock Absorption Context",
-                    "so_what": "Dependency structure influences shock absorption capacity.",
+                    "so_what": (
+                        "Dependency structure influences shock absorption capacity."
+                    ),
                 },
             ])
     
@@ -1060,43 +1287,57 @@ class SupplyChainDomain(BaseDomain):
                     "level": "INFO",
                     "sub_domain": "sustainability",
                     "title": "Emission Signal Availability",
-                    "so_what": "Environmental impact signals are present.",
+                    "so_what": (
+                        "Environmental impact signals are available for analysis."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "sustainability",
                     "title": "Emission Variability Context",
-                    "so_what": "Emission dispersion indicates efficiency variation.",
+                    "so_what": (
+                        "Emission dispersion reflects efficiency variation."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "sustainability",
                     "title": "Environmental Efficiency Baseline",
-                    "so_what": "Average emissions provide an efficiency baseline.",
-                },
-                {
-                    "level": "INFO",
-                    "sub_domain": "sustainability",
-                    "title": "Sustainability Monitoring Readiness",
-                    "so_what": "Data supports ongoing sustainability monitoring.",
+                    "so_what": (
+                        "Average emissions provide an efficiency baseline."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "sustainability",
                     "title": "Operational Footprint Context",
-                    "so_what": "Emissions reflect operational footprint scale.",
+                    "so_what": (
+                        "Emissions reflect operational footprint scale."
+                    ),
+                },
+                {
+                    "level": "INFO",
+                    "sub_domain": "sustainability",
+                    "title": "Sustainability Monitoring Readiness",
+                    "so_what": (
+                        "Data supports ongoing sustainability monitoring."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "sustainability",
                     "title": "Efficiency Improvement Context",
-                    "so_what": "Environmental signals inform efficiency opportunities.",
+                    "so_what": (
+                        "Environmental signals inform efficiency discussions."
+                    ),
                 },
                 {
                     "level": "INFO",
                     "sub_domain": "sustainability",
                     "title": "ESG Readiness Signal",
-                    "so_what": "Sustainability data supports ESG reporting readiness.",
+                    "so_what": (
+                        "Sustainability data supports ESG reporting readiness."
+                    ),
                 },
             ])
     
@@ -1107,8 +1348,10 @@ class SupplyChainDomain(BaseDomain):
             insights.append({
                 "level": "INFO",
                 "sub_domain": "mixed",
-                "title": "Supply Chain Operations Stable",
-                "so_what": "Available signals indicate stable supply chain operations.",
+                "title": "Supply Chain Operations Overview",
+                "so_what": (
+                    "Available signals support a descriptive overview of supply chain operations."
+                ),
             })
     
         return insights
@@ -1122,14 +1365,17 @@ class SupplyChainDomain(BaseDomain):
         insights: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Executive-safe, sub-domain aware recommendations.
-        Compatible with orchestrator calling conventions.
+        Supply Chain Advisory Recommendation Engine (v1.0)
+    
+        GUARANTEES:
+        - Advisory-only (no mandates)
+        - Sub-domain aware
+        - Insight-decoupled
+        - No thresholds or benchmarks
+        - Executive-safe language
         """
     
         recs: List[Dict[str, Any]] = []
-    
-        insights = insights or []
-        insight_titles = {i.get("title") for i in insights if isinstance(i, dict)}
     
         if not isinstance(kpis, dict):
             return recs
@@ -1153,6 +1399,11 @@ class SupplyChainDomain(BaseDomain):
                 },
                 {
                     "sub_domain": "planning",
+                    "action": "Assess buffer strategies using lead time dispersion signals.",
+                    "priority": "MEDIUM",
+                },
+                {
+                    "sub_domain": "planning",
                     "action": "Review planning horizons against observed fulfillment timelines.",
                     "priority": "LOW",
                 },
@@ -1165,11 +1416,6 @@ class SupplyChainDomain(BaseDomain):
                     "sub_domain": "planning",
                     "action": "Use demand flow trends to stress-test planning scenarios.",
                     "priority": "LOW",
-                },
-                {
-                    "sub_domain": "planning",
-                    "action": "Assess buffer strategies using lead time dispersion signals.",
-                    "priority": "MEDIUM",
                 },
                 {
                     "sub_domain": "planning",
@@ -1247,12 +1493,12 @@ class SupplyChainDomain(BaseDomain):
                 },
                 {
                     "sub_domain": "inventory",
-                    "action": "Strengthen inventory governance with consistent availability metrics.",
+                    "action": "Assess category-level stock mix for alignment with demand patterns.",
                     "priority": "LOW",
                 },
                 {
                     "sub_domain": "inventory",
-                    "action": "Assess category-level stock mix for alignment with demand patterns.",
+                    "action": "Strengthen inventory governance with consistent availability metrics.",
                     "priority": "LOW",
                 },
                 {
@@ -1400,13 +1646,14 @@ class SupplyChainDomain(BaseDomain):
     
         return recs
 
+
 # =====================================================
 # DOMAIN DETECTOR
 # =====================================================
 
 class SupplyChainDomainDetector(BaseDomainDetector):
     """
-    Supply Chain Domain Detector (v1.1)
+    Supply Chain Domain Detector (v1.2)
 
     Detects datasets focused on:
     - Inventory positioning
@@ -1421,33 +1668,20 @@ class SupplyChainDomainDetector(BaseDomainDetector):
 
     domain_name = "supply_chain"
 
-    # Strong supply chain anchors (raw operational signals)
+    # Strong supply chain anchors (operational signals)
     SUPPLY_CHAIN_ANCHORS: Set[str] = {
-        "inventory",
-        "stock",
-        "stock_level",
-        "order_id",
-        "shipment",
-        "ship_date",
-        "delivery_date",
-        "promised_date",
-        "carrier",
-        "supplier",
-        "logistics",
-        "freight",
-        "warehouse",
+        "inventory", "stock", "stock_level",
+        "order_id", "shipment",
+        "ship_date", "delivery_date", "promised_date",
+        "carrier", "supplier", "vendor",
+        "logistics", "freight", "warehouse",
     }
 
-    # Commerce ownership signals (boundary control)
-    EXCLUSION_TOKENS: Set[str] = {
-        "revenue",
-        "sales",
-        "price",
-        "transaction",
-        "order_value",
-        "gmv",
+    # Commerce / ownership signals (boundary control)
+    COMMERCE_TOKENS: Set[str] = {
+        "revenue", "sales", "price", "gmv",
+        "order_value", "transaction", "payment",
         "customer",
-        "payment",
     }
 
     def detect(self, df: pd.DataFrame) -> DomainDetectionResult:
@@ -1457,43 +1691,76 @@ class SupplyChainDomainDetector(BaseDomainDetector):
         if df is None or df.empty:
             return DomainDetectionResult(None, 0.0, {})
 
-        cols = {str(c).lower() for c in df.columns}
+        cols = [str(c).lower() for c in df.columns]
+
+        def tokenize(col: str) -> Set[str]:
+            return set(col.replace("_", " ").split())
+
+        tokenized = {c: tokenize(c) for c in cols}
 
         # -------------------------------------------------
-        # ANCHOR SIGNALS
+        # SUPPLY CHAIN CAPABILITY SIGNALS
         # -------------------------------------------------
-        has_inventory = any("inventory" in c or "stock" in c for c in cols)
-        has_delivery = any("delivery" in c or "ship" in c for c in cols)
-        has_logistics = any("carrier" in c or "freight" in c or "logistics" in c for c in cols)
-        has_supplier = any("supplier" in c or "vendor" in c for c in cols)
+        inventory_hits = {
+            c for c, t in tokenized.items()
+            if t & {"inventory", "stock"}
+        }
 
-        core_signals = sum([
-            has_inventory,
-            has_delivery,
-            has_logistics,
+        delivery_hits = {
+            c for c, t in tokenized.items()
+            if t & {"ship", "delivery", "shipment"}
+        }
+
+        logistics_hits = {
+            c for c, t in tokenized.items()
+            if t & {"carrier", "freight", "logistics", "warehouse"}
+        }
+
+        supplier_hits = {
+            c for c, t in tokenized.items()
+            if t & {"supplier", "vendor"}
+        }
+
+        core_signal_groups = sum([
+            bool(inventory_hits),
+            bool(delivery_hits),
+            bool(logistics_hits),
         ])
 
         # -------------------------------------------------
-        # BASE CONFIDENCE (CAPABILITY-BASED)
+        # BASE CONFIDENCE (CAPABILITY-DRIVEN)
         # -------------------------------------------------
         confidence = 0.0
 
-        if core_signals >= 2:
+        if core_signal_groups == 1:
+            confidence = 0.45
+        elif core_signal_groups == 2:
             confidence = 0.65
-
-        if core_signals == 3:
+        elif core_signal_groups == 3:
             confidence = 0.8
 
-        if has_supplier:
+        if supplier_hits:
             confidence += 0.05
 
         # -------------------------------------------------
-        # BOUNDARY CONTROL
+        # NEGATIVE GATES — COMMERCE OWNERSHIP
         # -------------------------------------------------
-        has_revenue = any(t in c for t in self.EXCLUSION_TOKENS for c in cols)
+        commerce_hits = {
+            c for c, t in tokenized.items()
+            if t & self.COMMERCE_TOKENS
+        }
 
-        if has_revenue:
-            confidence -= 0.25
+        # Strong commerce signature → suppress
+        has_customer = any("customer" in c for c in cols)
+        has_revenue = any("revenue" in c or "sales" in c for c in cols)
+        has_order_value = any("value" in c or "price" in c for c in cols)
+
+        if has_customer and has_revenue and has_order_value:
+            confidence *= 0.4
+
+        # Light penalty for mixed datasets
+        elif commerce_hits:
+            confidence -= 0.15
 
         confidence = round(max(0.0, min(0.95, confidence)), 2)
 
@@ -1506,29 +1773,33 @@ class SupplyChainDomainDetector(BaseDomainDetector):
                 0.0,
                 {
                     "supply_chain_signals": {
-                        "inventory": has_inventory,
-                        "delivery": has_delivery,
-                        "logistics": has_logistics,
-                        "supplier": has_supplier,
+                        "inventory": bool(inventory_hits),
+                        "delivery": bool(delivery_hits),
+                        "logistics": bool(logistics_hits),
+                        "supplier": bool(supplier_hits),
                     },
+                    "commerce_signals": sorted(commerce_hits),
                 },
             )
 
         return DomainDetectionResult(
-            domain="supply_chain",
+            domain=self.domain_name,
             confidence=confidence,
             signals={
                 "supply_chain_signals": {
-                    "inventory": has_inventory,
-                    "delivery": has_delivery,
-                    "logistics": has_logistics,
-                    "supplier": has_supplier,
+                    "inventory": bool(inventory_hits),
+                    "delivery": bool(delivery_hits),
+                    "logistics": bool(logistics_hits),
+                    "supplier": bool(supplier_hits),
                 },
-                "excluded_signals": [
-                    c for c in cols if any(t in c for t in self.EXCLUSION_TOKENS)
-                ],
+                "commerce_signals": sorted(commerce_hits),
             },
         )
 
+
 def register(registry):
-    registry.register("supply_chain", SupplyChainDomain, SupplyChainDomainDetector)
+    registry.register(
+        "supply_chain",
+        SupplyChainDomain,
+        SupplyChainDomainDetector,
+    )
