@@ -1,97 +1,148 @@
 # =====================================================
-# DOMAIN INTENT SCORING — STABILIZED
-# Sreejita Framework v3.6
+# DOMAIN INTENT SCORING — STABILIZED & BOUNDARY-SAFE
+# Sreejita Framework v3.6 (FINAL)
 # =====================================================
+
+"""
+PURPOSE:
+- Provide SOFT semantic alignment signals
+- Assist explainability & UI diagnostics
+- NEVER override domain detectors
+- NEVER create or force domain selection
+
+INTENT SCORING IS:
+✔ Advisory
+✔ Conservative
+✔ Detector-subordinate
+
+INTENT SCORING IS NOT:
+✘ A classifier
+✘ A router
+✘ A decision-maker
+"""
+
+from typing import Iterable, Tuple, Dict, Any, Set
 
 from .domain_intents import DOMAIN_INTENTS
 
-# -------------------------------------------------
-# WEIGHTS (CONSERVATIVE)
-# -------------------------------------------------
-
-HIGH_WEIGHT = 3          # strong semantic signal
-AMBIGUOUS_WEIGHT = 0.5  # weak context only (not additive dominance)
-
-# Hard cap to prevent intent inflation
-MAX_INTENT_SCORE = 10
-
 
 # -------------------------------------------------
-# DOMAIN-EXCLUSIVE PENALTY MAP
+# WEIGHTS (CONSERVATIVE BY DESIGN)
 # -------------------------------------------------
 
-DOMAIN_EXCLUSIVE_SIGNALS = {
+HIGH_WEIGHT = 3.0          # strong semantic alignment
+AMBIGUOUS_WEIGHT = 0.5    # weak contextual hint only
+
+# Absolute hard cap — prevents intent inflation
+MAX_INTENT_SCORE = 10.0
+
+
+# -------------------------------------------------
+# DOMAIN-EXCLUSIVE CONFLICT SIGNALS
+# -------------------------------------------------
+# Presence of these signals REDUCES confidence
+# They NEVER fully eliminate intent (graceful degradation)
+
+DOMAIN_EXCLUSIVE_SIGNALS: Dict[str, Set[str]] = {
     "healthcare": {
         "revenue", "profit", "margin", "invoice",
-        "sku", "inventory", "sales"
-    },
-    "pharmacy": {
-        "admission", "discharge", "bed", "icu",
-        "surgery", "ward"
+        "sku", "inventory", "sales",
     },
     "finance": {
         "patient", "diagnosis", "treatment",
-        "clinical", "mortality"
+        "clinical", "mortality",
     },
     "customer": {
-        "salary", "ctc", "payroll", "attrition",
-        "leave", "attendance", "performance"
+        "salary", "ctc", "payroll",
+        "attrition", "leave", "attendance",
+        "performance",
     },
     "hr": {
-        "customer", "order", "purchase", "cart",
-        "checkout"
+        "customer", "order", "purchase",
+        "cart", "checkout",
     },
 }
 
 
 # -------------------------------------------------
-# INTENT SCORING FUNCTION
+# INTENT SCORING (ADVISORY ONLY)
 # -------------------------------------------------
 
-def score_domain_intent(normalized_columns, domain: str):
+def score_domain_intent(
+    normalized_columns: Iterable[str],
+    domain: str,
+) -> Tuple[float, Dict[str, Any]]:
     """
-    Conservative intent scoring.
+    Score semantic intent alignment for a SINGLE domain.
+
+    INPUT:
+    - normalized_columns: iterable of normalized column tokens
+    - domain: candidate domain name
+
+    OUTPUT:
+    - score: float (0.0 → MAX_INTENT_SCORE)
+    - signals: structured explanation payload
 
     GUARANTEES:
-    - Intent NEVER introduces domains
-    - Ambiguous signals are weak
-    - Cross-domain contamination is penalized
+    - Never raises
+    - Never returns negative scores
+    - Never introduces domains
+    - Never exceeds MAX_INTENT_SCORE
     """
 
-    intents = DOMAIN_INTENTS.get(domain)
-    if not intents:
-        return 0, {}
+    try:
+        if not domain or domain not in DOMAIN_INTENTS:
+            return 0.0, {}
 
-    high_hits = intents.get("high", set()).intersection(normalized_columns)
-    amb_hits = intents.get("ambiguous", set()).intersection(normalized_columns)
+        tokens = set(normalized_columns or [])
 
-    # -------------------------------
-    # BASE SCORE
-    # -------------------------------
-    score = (
-        len(high_hits) * HIGH_WEIGHT +
-        len(amb_hits) * AMBIGUOUS_WEIGHT
-    )
+        intents = DOMAIN_INTENTS.get(domain, {})
+        high_tokens = intents.get("high", set())
+        amb_tokens = intents.get("ambiguous", set())
 
-    # -------------------------------
-    # EXCLUSIVE SIGNAL PENALTY
-    # -------------------------------
-    exclusive = DOMAIN_EXCLUSIVE_SIGNALS.get(domain)
-    if exclusive and exclusive.intersection(normalized_columns):
-        # Penalize strongly — intent conflict
-        score *= 0.5
+        # ---------------------------------------------
+        # MATCHES
+        # ---------------------------------------------
+        high_hits = high_tokens.intersection(tokens)
+        amb_hits = amb_tokens.intersection(tokens)
 
-    # -------------------------------
-    # HARD SAFETY CAPS
-    # -------------------------------
-    score = max(0.0, min(score, MAX_INTENT_SCORE))
+        # ---------------------------------------------
+        # BASE SCORE
+        # ---------------------------------------------
+        score = (
+            len(high_hits) * HIGH_WEIGHT +
+            len(amb_hits) * AMBIGUOUS_WEIGHT
+        )
 
-    # -------------------------------
-    # CLEAN SIGNAL PAYLOAD
-    # -------------------------------
-    signals = {
-        "high_confidence_matches": sorted(high_hits),
-        "ambiguous_matches": sorted(amb_hits),
-    }
+        # ---------------------------------------------
+        # EXCLUSIVE CONFLICT PENALTY (SOFT)
+        # ---------------------------------------------
+        exclusive = DOMAIN_EXCLUSIVE_SIGNALS.get(domain)
+        conflict_hits = set()
 
-    return float(score), signals
+        if exclusive:
+            conflict_hits = exclusive.intersection(tokens)
+            if conflict_hits:
+                score *= 0.5  # soft but meaningful penalty
+
+        # ---------------------------------------------
+        # HARD SAFETY CAPS
+        # ---------------------------------------------
+        score = max(0.0, min(float(score), MAX_INTENT_SCORE))
+
+        # ---------------------------------------------
+        # EXPLANATION PAYLOAD (CLEAN & UI-SAFE)
+        # ---------------------------------------------
+        signals = {
+            "domain": domain,
+            "high_confidence_matches": sorted(high_hits),
+            "ambiguous_matches": sorted(amb_hits),
+            "conflicting_signals": sorted(conflict_hits),
+            "raw_token_count": len(tokens),
+        }
+
+        return score, signals
+
+    except Exception:
+        # Absolute safety — intent layer must never crash
+        return 0.0, {}
