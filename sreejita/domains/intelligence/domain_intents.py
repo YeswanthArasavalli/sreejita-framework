@@ -1,7 +1,20 @@
 # =====================================================
 # DOMAIN INTENTS — CANONICAL & NORMALIZATION-ALIGNED
-# Sreejita Framework v3.6 (STABLE)
+# Sreejita Framework v3.6 (FINAL)
 # =====================================================
+
+"""
+PURPOSE:
+- Provide weak, vocabulary-level intent signals
+- Support intelligence layers (intent scoring, explainability)
+- NEVER override detectors
+- NEVER infer domain ownership directly
+
+DESIGN RULES:
+- Tokens MUST already be normalized (snake_case)
+- Tokens are SEMANTIC HINTS, not rules
+- Used ONLY as soft priors
+"""
 
 DOMAIN_INTENTS = {
 
@@ -10,15 +23,29 @@ DOMAIN_INTENTS = {
     # =====================================================
     "supply_chain": {
         "high": {
-            "warehouse", "carrier", "shipping_mode", "freight",
-            "delivery_status", "tracking_number", "route",
-            "inventory_level", "stock_on_hand", "safety_stock",
-            "reorder_point", "supplier", "vendor", "procurement",
-            "lead_time", "cycle_time", "on_time_delivery",
-            "fill_rate", "backorder", "sku"
+            # Inventory & warehousing
+            "warehouse", "inventory", "inventory_level",
+            "stock", "stock_on_hand", "safety_stock",
+            "reorder_point", "backorder",
+
+            # Logistics & movement
+            "carrier", "freight", "shipping_mode",
+            "delivery_status", "tracking_number",
+            "route", "shipment", "ship_date",
+            "delivery_date", "promised_date",
+
+            # Procurement
+            "supplier", "vendor", "procurement",
+
+            # Flow metrics
+            "lead_time", "cycle_time",
+            "on_time_delivery", "fill_rate",
+
+            # Product
+            "sku"
         },
         "ambiguous": {
-            "order_id", "quantity", "location", "date"
+            "order_id", "quantity", "location", "date", "status"
         }
     },
 
@@ -27,16 +54,26 @@ DOMAIN_INTENTS = {
     # =====================================================
     "hr": {
         "high": {
+            # Identity
             "employee_id", "employee_name", "staff_id",
+
+            # Organization
             "department", "designation", "role", "manager",
+
+            # Compensation
             "salary", "compensation", "ctc", "payroll", "bonus",
+
+            # Lifecycle
             "attrition", "termination", "resignation",
             "hire_date", "joining_date", "exit_date",
+
+            # Performance & attendance
             "performance_score", "rating",
-            "leave_balance", "attendance", "timesheet"
+            "leave_balance", "attendance", "timesheet",
+            "absence", "tenure"
         },
         "ambiguous": {
-            "id", "date", "gender", "age", "location"
+            "id", "date", "gender", "age", "location", "status"
         }
     },
 
@@ -45,10 +82,18 @@ DOMAIN_INTENTS = {
     # =====================================================
     "marketing": {
         "high": {
+            # Campaign structure
             "campaign_id", "ad_group", "creative_id",
-            "impressions", "clicks", "ctr", "cpc", "cpm",
-            "roas", "ad_spend", "cost_per_acquisition",
-            "utm_source", "utm_medium"
+
+            # Reach & engagement
+            "impressions", "clicks", "ctr",
+
+            # Cost & efficiency
+            "cpc", "cpm", "ad_spend",
+            "cost_per_acquisition", "roas",
+
+            # Attribution
+            "utm_source", "utm_medium", "utm_campaign"
         },
         "ambiguous": {
             "channel", "cost", "revenue", "date"
@@ -60,10 +105,19 @@ DOMAIN_INTENTS = {
     # =====================================================
     "retail": {
         "high": {
+            # Store & POS
             "store_id", "store_location", "pos_id",
-            "cashier", "shelf", "aisle", "zone",
-            "promotion", "markdown", "loyalty_card",
-            "foot_traffic", "basket_size"
+            "cashier",
+
+            # Merchandising
+            "shelf", "aisle", "zone",
+
+            # Promotions
+            "promotion", "markdown",
+
+            # Customer behavior
+            "loyalty_card", "foot_traffic",
+            "basket_size"
         },
         "ambiguous": {
             "sales", "quantity", "price", "sku", "date"
@@ -75,15 +129,23 @@ DOMAIN_INTENTS = {
     # =====================================================
     "ecommerce": {
         "high": {
+            # Funnel
             "cart_abandonment", "add_to_cart",
             "checkout", "conversion_rate",
-            "aov", "cac", "session_duration",
-            "bounce_rate", "pageviews",
-            "unique_visitors", "payment_gateway",
-            "shipping_method"
+
+            # Economics
+            "aov", "cac",
+
+            # Behavior
+            "session_duration", "bounce_rate",
+            "pageviews", "unique_visitors",
+
+            # Payment & shipping
+            "payment_gateway", "shipping_method"
         },
         "ambiguous": {
-            "user_id", "order_date", "discount_code", "amount"
+            "user_id", "order_date",
+            "discount_code", "amount"
         }
     },
 
@@ -92,13 +154,23 @@ DOMAIN_INTENTS = {
     # =====================================================
     "customer": {
         "high": {
-            "customer_id", "customer_name", "segment",
+            # Identity
+            "customer_id", "customer_name",
+
+            # Segmentation
+            "segment",
+
+            # Value modeling
             "rfm", "recency", "frequency", "monetary",
-            "lifetime_value", "churn", "nps", "csat",
+            "lifetime_value",
+
+            # Experience
+            "churn", "nps", "csat",
             "support_ticket"
         },
         "ambiguous": {
-            "email", "phone", "transaction_id", "amount", "date"
+            "email", "phone",
+            "transaction_id", "amount", "date"
         }
     },
 
@@ -107,12 +179,21 @@ DOMAIN_INTENTS = {
     # =====================================================
     "finance": {
         "high": {
+            # P&L
             "revenue", "expense", "profit", "loss",
+
+            # Balance sheet
             "asset", "liability", "equity",
+
+            # Cash & earnings
             "cash_flow", "net_income", "ebitda",
-            "interest_rate", "balance",
+
+            # Market data
             "open", "close", "high", "low",
-            "adjusted_close", "volume", "market_cap"
+            "adjusted_close", "volume", "market_cap",
+
+            # Rates
+            "interest_rate", "balance"
         },
         "ambiguous": {
             "price", "amount", "currency", "date"
@@ -120,11 +201,11 @@ DOMAIN_INTENTS = {
     },
 
     # =====================================================
-    # HEALTHCARE 🏥 (CRITICAL FIX)
+    # HEALTHCARE 🏥 (BOUNDARY-SAFE)
     # =====================================================
     "healthcare": {
         "high": {
-            # Identity & encounter
+            # Identity & encounters
             "patient_id", "encounter", "visit_id",
 
             # Dates
@@ -140,16 +221,17 @@ DOMAIN_INTENTS = {
             "readmitted", "mortality", "flag",
 
             # Pharmacy
-            "days_supply", "supply", "rx_volume",
+            "days_supply", "rx_volume", "supply",
 
-            # Financial healthcare
+            # Financial (healthcare-contextual)
             "billing_amount", "cost",
 
             # Population health
             "population"
         },
         "ambiguous": {
-            "id", "date", "age", "gender", "facility", "status"
+            "id", "date", "age", "gender",
+            "facility", "status"
         }
     },
 }
