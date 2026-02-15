@@ -153,7 +153,10 @@ class HybridReport(BaseReport):
         }:
             f.write("### Analysis Status\n\n")
             f.write(f"- **Status:** {status.replace('_',' ').title()}\n")
-            f.write(f"- **Confidence Context:** {confidence if confidence is not None else '—'}\n\n")
+            f.write(
+                f"- **Confidence Context:** "
+                f"{confidence if confidence is not None else '—'}\n\n"
+            )
 
             self._write_policy_notes(f, result)
             f.write("---\n\n")
@@ -167,6 +170,7 @@ class HybridReport(BaseReport):
         # ---------------- INSIGHTS ----------------
         f.write("### Key Insights\n\n")
         insights = [i for i in (result.get("insights") or []) if isinstance(i, dict)][:5]
+
         if insights:
             for ins in insights:
                 f.write(
@@ -180,21 +184,25 @@ class HybridReport(BaseReport):
         # ---------------- RECOMMENDATIONS ----------------
         f.write("### Recommendations\n\n")
         recs = [r for r in (result.get("recommendations") or []) if isinstance(r, dict)][:5]
+
         if recs:
             for r in recs:
                 f.write(
                     f"- **{r.get('priority','')}** — {r.get('action','')} "
-                    f"(Owner: {r.get('owner','—')}, Timeline: {r.get('timeline','—')})\n"
+                    f"(Owner: {r.get('owner','—')}, "
+                    f"Timeline: {r.get('timeline','—')})\n"
                 )
             f.write("\n")
         else:
-            f.write("_No recommendations surfaced under current confidence and policy constraints._\n\n")
+            f.write(
+                "_No recommendations surfaced under current confidence and policy constraints._\n\n"
+            )
 
         self._write_policy_notes(f, result)
         f.write("---\n\n")
 
     # -------------------------------------------------
-    # POLICY NOTES
+    # POLICY NOTES (SAFE, DYNAMIC)
     # -------------------------------------------------
     def _write_policy_notes(self, f, payload: Dict[str, Any]):
         explanations = payload.get("explanations") or []
