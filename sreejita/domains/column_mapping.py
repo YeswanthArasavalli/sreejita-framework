@@ -1,58 +1,184 @@
-"""Universal Column Mapping - Fix #3 for retail bias resolution.
+"""
+Universal Column Mapping
+Sreejita Framework v3.6
 
-This module provides flexible column mapping across all domains,
-allowing KPIs and visualizations to work with any column naming convention.
+PURPOSE:
+- Provide domain-agnostic semantic column discovery
+- Eliminate retail / finance bias
+- Support graceful degradation across all domains
+- Never mutate input DataFrames
+- Never assume domain ownership
 """
 
-from typing import List, Optional, Set
+from typing import Optional, Set, Dict
 import pandas as pd
 
 
 class ColumnMapping:
-    """Universal column mapping for flexible domain analysis."""
+    """
+    Universal semantic column mapping helper.
 
-    # Financial columns
-    REVENUE_COLS = {"revenue", "sales", "income", "total_spend", "total_sales", "amount"}
-    COST_COLS = {"cost", "expense", "expenses", "total_cost", "spending"}
-    PROFIT_COLS = {"profit", "net_income", "margin", "net_profit", "earnings"}
+    DESIGN PRINCIPLES:
+    - Capability-first (not domain-first)
+    - Case-insensitive matching
+    - No mutation
+    - No hard dependency on any domain
+    """
 
-    # Categorical columns
-    CATEGORY_COLS = {"category", "department", "unit", "process_stage", "segment", "division", "group"}
-    
-    # Temporal columns
-    DATE_COLS = {"date", "order_date", "transaction_date", "timestamp", "time_period", "period"}
-    
-    # ID columns
-    ID_COLS = {"id", "customer_id", "order_id", "transaction_id", "patient_id", "entity_id"}
-
-    # Example: Map custom columns to healthcare standard
-    HEALTHCARE_MAPPING = {
-        "your_patient_col": "patient_id",
-        "your_admission_col": "admission_date",
-        "your_discharge_col": "discharge_date",
-        "your_los_col": "length_of_stay",
+    # -------------------------------------------------
+    # NUMERIC / FINANCIAL-LIKE SIGNALS (GENERIC)
+    # -------------------------------------------------
+    VALUE_COLS: Set[str] = {
+        "value",
+        "amount",
+        "total",
+        "metric",
     }
-    
-    df_standardized = df.rename(columns=HEALTHCARE_MAPPING)
 
-    @staticmethod
-    def find_column(df_columns: Set[str], mapping_set: Set[str]) -> Optional[str]:
-        """Find first matching column from mapping set in dataframe columns."""
-        df_cols_lower = {str(c).lower() for c in df_columns}
-        for col in mapping_set:
-            if col.lower() in df_cols_lower:
-                # Return original column name from df
-                return next(c for c in df_columns if str(c).lower() == col.lower())
-        return None
+    REVENUE_COLS: Set[str] = {
+        "revenue",
+        "sales",
+        "income",
+        "turnover",
+        "gmv",
+        "total_sales",
+        "order_value",
+    }
 
+    COST_COLS: Set[str] = {
+        "cost",
+        "expense",
+        "expenses",
+        "spend",
+        "spending",
+        "total_cost",
+    }
+
+    PROFIT_COLS: Set[str] = {
+        "profit",
+        "margin",
+        "net_profit",
+        "net_income",
+        "earnings",
+    }
+
+    # -------------------------------------------------
+    # CATEGORICAL / STRUCTURAL SIGNALS
+    # -------------------------------------------------
+    CATEGORY_COLS: Set[str] = {
+        "category",
+        "department",
+        "unit",
+        "segment",
+        "division",
+        "group",
+        "type",
+        "class",
+    }
+
+    ENTITY_COLS: Set[str] = {
+        "entity",
+        "product",
+        "item",
+        "sku",
+        "service",
+        "resource",
+    }
+
+    # -------------------------------------------------
+    # TEMPORAL SIGNALS (GENERIC)
+    # -------------------------------------------------
+    DATE_COLS: Set[str] = {
+        "date",
+        "timestamp",
+        "time",
+        "period",
+        "event_date",
+        "record_date",
+        "created_at",
+        "updated_at",
+    }
+
+    # -------------------------------------------------
+    # IDENTIFIERS (NON-DOMAIN-SPECIFIC)
+    # -------------------------------------------------
+    ID_COLS: Set[str] = {
+        "id",
+        "record_id",
+        "entity_id",
+        "order_id",
+        "transaction_id",
+        "user_id",
+        "employee_id",
+        "patient_id",
+        "case_id",
+    }
+
+    # -------------------------------------------------
+    # CORE MATCHING LOGIC (SAFE)
+    # -------------------------------------------------
     @staticmethod
-    def auto_detect(df: pd.DataFrame) -> dict:
-        """Auto-detect columns based on universal mapping."""
+    def find_column(
+        df_columns: Set[str],
+        semantic_candidates: Set[str],
+    ) -> Optional[str]:
+        """
+        Find the first matching column in df_columns
+        based on semantic_candidates.
+
+        GUARANTEES:
+        - Case-insensitive
+        - Returns original column name
+        - Never raises
+        """
+        try:
+            lookup = {
+                str(c).lower().strip(): c
+                for c in df_columns
+            }
+
+            for token in semantic_candidates:
+                token_l = token.lower().strip()
+                if token_l in lookup:
+                    return lookup[token_l]
+
+            return None
+        except Exception:
+            return None
+
+    # -------------------------------------------------
+    # AUTO-DETECTION (CAPABILITY SNAPSHOT)
+    # -------------------------------------------------
+    @staticmethod
+    def auto_detect(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+        """
+        Perform lightweight semantic column detection.
+
+        RETURNS:
+        - Mapping of semantic capability → column name
+        - Missing signals return None
+        - NEVER mutates df
+        """
+
+        if not isinstance(df, pd.DataFrame):
+            return {}
+
+        cols = set(df.columns)
+
         return {
-            "revenue_col": ColumnMapping.find_column(set(df.columns), ColumnMapping.REVENUE_COLS),
-            "cost_col": ColumnMapping.find_column(set(df.columns), ColumnMapping.COST_COLS),
-            "profit_col": ColumnMapping.find_column(set(df.columns), ColumnMapping.PROFIT_COLS),
-            "category_col": ColumnMapping.find_column(set(df.columns), ColumnMapping.CATEGORY_COLS),
-            "date_col": ColumnMapping.find_column(set(df.columns), ColumnMapping.DATE_COLS),
-            "id_col": ColumnMapping.find_column(set(df.columns), ColumnMapping.ID_COLS),
+            # Value signals
+            "value": ColumnMapping.find_column(cols, ColumnMapping.VALUE_COLS),
+            "revenue": ColumnMapping.find_column(cols, ColumnMapping.REVENUE_COLS),
+            "cost": ColumnMapping.find_column(cols, ColumnMapping.COST_COLS),
+            "profit": ColumnMapping.find_column(cols, ColumnMapping.PROFIT_COLS),
+
+            # Structure
+            "category": ColumnMapping.find_column(cols, ColumnMapping.CATEGORY_COLS),
+            "entity": ColumnMapping.find_column(cols, ColumnMapping.ENTITY_COLS),
+
+            # Time
+            "date": ColumnMapping.find_column(cols, ColumnMapping.DATE_COLS),
+
+            # Identity
+            "id": ColumnMapping.find_column(cols, ColumnMapping.ID_COLS),
         }
