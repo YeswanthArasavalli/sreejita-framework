@@ -30,6 +30,7 @@ class BaseDomain(ABC):
     - Deterministic KPI lifecycle
     - Visual safety (guaranteed)
     - Executive-safe cognition
+    - Never crashes orchestrator
 
     MUST NOT:
     - Route domains
@@ -47,15 +48,25 @@ class BaseDomain(ABC):
     # OPTIONAL VALIDATION (SAFE DEFAULT)
     # --------------------------------------------------
     def validate_data(self, df: pd.DataFrame) -> bool:
+        """
+        Domain-specific validation hook.
+
+        DEFAULT:
+        - Always True
+        - Never raises
+        """
         return True
 
     # --------------------------------------------------
-    # OPTIONAL PREPROCESS (SAFE BY DEFAULT)
+    # OPTIONAL PREPROCESS (SAFE DEFAULT)
     # --------------------------------------------------
     def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Default preprocess is COPY-ONLY.
-        Domains may override, but MUST return a new df.
+
+        RULES:
+        - MUST return a DataFrame
+        - MUST NOT mutate original df
         """
         if not isinstance(df, pd.DataFrame):
             raise TypeError("preprocess expects a DataFrame")
@@ -66,6 +77,13 @@ class BaseDomain(ABC):
     # --------------------------------------------------
     @abstractmethod
     def calculate_kpis(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Compute KPIs.
+
+        MUST:
+        - Return a dict
+        - Never mutate df
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -76,6 +94,13 @@ class BaseDomain(ABC):
         *args,
         **kwargs,
     ) -> List[Dict[str, Any]]:
+        """
+        Generate insights from KPIs.
+
+        MUST:
+        - Return a list
+        - Be evidence-based
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -87,6 +112,13 @@ class BaseDomain(ABC):
         *args,
         **kwargs,
     ) -> List[Dict[str, Any]]:
+        """
+        Generate recommendations.
+
+        MUST:
+        - Return a list
+        - Be advisory-only
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -95,6 +127,13 @@ class BaseDomain(ABC):
         df: pd.DataFrame,
         output_dir: Path,
     ) -> List[Dict[str, Any]]:
+        """
+        Generate visuals.
+
+        MUST:
+        - Return a list
+        - NEVER raise
+        """
         raise NotImplementedError
 
     # --------------------------------------------------
@@ -108,8 +147,13 @@ class BaseDomain(ABC):
     ) -> List[Dict[str, Any]]:
         """
         Guarantees at least 2 visuals.
-        Fallback visuals are explicitly marked.
-        NEVER raises.
+
+        FALLBACK VISUALS:
+        - Dataset size
+        - Data completeness
+
+        ABSOLUTE RULE:
+        - NEVER raises
         """
 
         visuals = visuals if isinstance(visuals, list) else []
@@ -166,7 +210,7 @@ class BaseDomain(ABC):
             })
 
         except Exception:
-            pass  # absolute safety
+            pass  # absolute safety guarantee
 
         return visuals
 
@@ -179,6 +223,14 @@ class BaseDomain(ABC):
         insights: List[Dict[str, Any]],
         recommendations: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        """
+        Builds executive-facing summary.
+
+        GUARANTEES:
+        - Never hallucinates
+        - Sub-domain aware
+        - Stable output shape
+        """
 
         executive = build_executive_payload(
             kpis=kpis or {},
@@ -211,62 +263,87 @@ class BaseDomain(ABC):
         visual_output_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """
-        Legacy pipeline.
+        Legacy domain execution pipeline.
 
-        GUARANTEES:
+        HARD GUARANTEES:
         - No shared mutation
-        - Visuals always exist
-        - Executive always stable
+        - Visuals always exist (if requested)
+        - Executive output always stable
+        - Exceptions never escape
         """
 
-        if not self.validate_data(df):
-            raise ValueError(f"Data validation failed for domain: {self.name}")
-
-        # Defensive copy
-        df = df.copy(deep=False)
-
-        # Domain preprocessing
-        df = self.preprocess(df)
-
-        # KPI lifecycle
-        kpis = self.calculate_kpis(df)
-        if not isinstance(kpis, dict):
-            raise TypeError("calculate_kpis must return a dict")
-
-        self._last_kpis = kpis
-
-        insights = self.generate_insights(df, kpis)
-        recommendations = self.generate_recommendations(df, kpis, insights)
-
-        # Visuals (guaranteed)
-        visuals: List[Dict[str, Any]] = []
-        if visual_output_dir is not None:
-            try:
-                visuals = self.generate_visuals(df, visual_output_dir)
-                visuals = self.ensure_minimum_visuals(
-                    visuals,
-                    df,
-                    visual_output_dir,
-                )
-            except Exception:
-                visuals = self.ensure_minimum_visuals(
-                    [],
-                    df,
-                    visual_output_dir,
-                )
-
-        executive = self.build_executive(
-            kpis=kpis,
-            insights=insights,
-            recommendations=recommendations,
-        )
-
-        return {
+        result = {
             "domain": self.name,
             "description": self.description,
-            "kpis": kpis,
-            "insights": insights,
-            "recommendations": recommendations,
-            "visuals": visuals,
-            "executive": executive,
+            "kpis": {},
+            "insights": [],
+            "recommendations": [],
+            "visuals": [],
+            "executive": {},
         }
+
+        try:
+            if not self.validate_data(df):
+                return result
+
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                return result
+
+            # Defensive copy
+            df = df.copy(deep=False)
+
+            # Preprocess
+            df = self.preprocess(df)
+            if df is None or df.empty:
+                return result
+
+            # KPIs
+            kpis = self.calculate_kpis(df)
+            if not isinstance(kpis, dict):
+                kpis = {}
+
+            self._last_kpis = kpis
+
+            # Insights & recommendations
+            insights = self.generate_insights(df, kpis) or []
+            recommendations = self.generate_recommendations(df, kpis, insights) or []
+
+            # Visuals
+            visuals: List[Dict[str, Any]] = []
+            if visual_output_dir is not None:
+                try:
+                    visuals = self.generate_visuals(df, visual_output_dir)
+                    visuals = self.ensure_minimum_visuals(
+                        visuals,
+                        df,
+                        visual_output_dir,
+                    )
+                except Exception:
+                    visuals = self.ensure_minimum_visuals(
+                        [],
+                        df,
+                        visual_output_dir,
+                    )
+
+            # Executive cognition
+            executive = self.build_executive(
+                kpis=kpis,
+                insights=insights,
+                recommendations=recommendations,
+            )
+
+            result.update(
+                {
+                    "kpis": kpis,
+                    "insights": insights,
+                    "recommendations": recommendations,
+                    "visuals": visuals,
+                    "executive": executive,
+                }
+            )
+
+        except Exception:
+            # ABSOLUTE SAFETY — never raise
+            return result
+
+        return result
