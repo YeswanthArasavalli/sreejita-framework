@@ -1,11 +1,11 @@
 # sreejita/narrative/engine.py
 
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 
 # =====================================================
-# OUTPUT MODELS (STABLE)
+# OUTPUT MODELS (STABLE, NON-INTERPRETIVE)
 # =====================================================
 
 @dataclass
@@ -22,28 +22,29 @@ class NarrativeResult:
     key_insights: List[str]
     risks: List[str]
     action_plan: List[ActionItem]
+    policy_notes: List[str]
 
 
 # =====================================================
-# NARRATIVE ENGINE (DETERMINISTIC, FORMAT-ONLY)
+# NARRATIVE ENGINE (FORMAT-ONLY, GOVERNED)
 # =====================================================
 
 def build_narrative(executive_payload: Dict[str, Any]) -> NarrativeResult:
     """
-    Narrative Engine — FINAL UNIVERSAL VERSION
+    Narrative Engine — FINAL GOVERNED VERSION
 
-    RULES:
-    - Does NOT compute intelligence
-    - Does NOT read raw KPIs
-    - Does NOT apply benchmarks
-    - ONLY explains Executive Cognition output
+    GUARANTEES:
+    - No intelligence computation
+    - No re-interpretation of insights
+    - No fabricated risks or actions
+    - Pure presentation of Executive Cognition output
     """
 
     if not isinstance(executive_payload, dict):
-        return NarrativeResult([], [], [], [])
+        return NarrativeResult([], [], [], [], [])
 
     # -------------------------------------------------
-    # EXECUTIVE SUMMARY (1-MINUTE)
+    # EXECUTIVE SUMMARY (PASS-THROUGH)
     # -------------------------------------------------
     summary: List[str] = []
 
@@ -51,71 +52,81 @@ def build_narrative(executive_payload: Dict[str, Any]) -> NarrativeResult:
     if isinstance(brief, str) and brief.strip():
         summary.append(brief.strip())
 
-    board = executive_payload.get("board_readiness", {})
-    if board:
-        summary.append(
-            f"Board Readiness Score: {board.get('score','-')} / 100 "
-            f"({board.get('band','Unknown')})."
-        )
+    board = executive_payload.get("board_readiness")
+    if isinstance(board, dict) and board:
+        score = board.get("score")
+        band = board.get("band")
+        if score is not None and band:
+            summary.append(
+                f"Board Readiness: {score} / 100 ({band})."
+            )
 
     # -------------------------------------------------
-    # KEY INSIGHTS (STRUCTURED)
+    # KEY INSIGHTS (NO REORDERING, NO INFERENCE)
     # -------------------------------------------------
     key_insights: List[str] = []
-    insight_block = executive_payload.get("insights", {})
 
-    for tier in ("strengths", "warnings", "risks"):
-        for ins in insight_block.get(tier, []):
-            so_what = ins.get("so_what")
-            if so_what:
-                key_insights.append(so_what)
+    insight_block = executive_payload.get("insights", {})
+    if isinstance(insight_block, dict):
+        for group in ("strengths", "warnings", "risks"):
+            for ins in insight_block.get(group, []):
+                text = ins.get("so_what") or ins.get("summary")
+                if isinstance(text, str) and text.strip():
+                    key_insights.append(text.strip())
 
     # -------------------------------------------------
-    # RISKS (EXECUTIVE SAFE)
+    # RISKS (ONLY IF EXPLICITLY PROVIDED)
     # -------------------------------------------------
     risks: List[str] = []
 
-    for ins in insight_block.get("risks", []):
-        title = ins.get("title")
-        if title:
-            risks.append(title)
-
-    if not risks and board.get("band") in ("LOW", "MODERATE"):
-        risks.append("Operational and governance risks require monitoring.")
+    if isinstance(insight_block, dict):
+        for ins in insight_block.get("risks", []):
+            title = ins.get("title")
+            if isinstance(title, str) and title.strip():
+                risks.append(title.strip())
 
     # -------------------------------------------------
-    # ACTION PLAN (TOP 5 ONLY)
+    # ACTION PLAN (STRICT PASS-THROUGH)
     # -------------------------------------------------
     actions: List[ActionItem] = []
 
-    for rec in executive_payload.get("recommendations", [])[:5]:
-        actions.append(
-            ActionItem(
-                action=rec.get("action", "Review performance"),
-                owner=rec.get("owner", "Management"),
-                timeline=rec.get("timeline", "TBD"),
-                expected_outcome=rec.get("goal", "Improve outcomes"),
-            )
-        )
+    for rec in (executive_payload.get("recommendations") or [])[:5]:
+        if not isinstance(rec, dict):
+            continue
 
-    if not actions:
+        action = rec.get("action")
+        if not action:
+            continue
+
         actions.append(
             ActionItem(
-                action="Continue monitoring key indicators",
-                owner="Leadership",
-                timeline="Ongoing",
-                expected_outcome="Sustained performance stability",
+                action=action,
+                owner=rec.get("owner", "—"),
+                timeline=rec.get("timeline", "—"),
+                expected_outcome=rec.get("goal", "—"),
             )
         )
 
     # -------------------------------------------------
-    # FINAL DISCIPLINE
+    # POLICY NOTES (VISIBLE, OPTIONAL)
+    # -------------------------------------------------
+    policy_notes: List[str] = []
+
+    explanations = executive_payload.get("explanations")
+    if isinstance(explanations, list):
+        for e in explanations:
+            if isinstance(e, str) and e.strip():
+                policy_notes.append(e.strip())
+
+    # -------------------------------------------------
+    # FINAL OUTPUT (NO DEFAULT FABRICATION)
     # -------------------------------------------------
     return NarrativeResult(
-        executive_summary=summary[:3],     # keep tight
+        executive_summary=summary[:3],
         key_insights=key_insights[:7],
         risks=risks[:5],
         action_plan=actions,
+        policy_notes=policy_notes,
     )
 
 
@@ -125,6 +136,6 @@ def build_narrative(executive_payload: Dict[str, Any]) -> NarrativeResult:
 
 def generate_narrative(executive_payload: Dict[str, Any]):
     """
-    Legacy alias — DO NOT USE for new logic.
+    Legacy alias — preserved for backward compatibility.
     """
     return build_narrative(executive_payload)
