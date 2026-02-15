@@ -1,4 +1,5 @@
 from sreejita.core.decision import PolicyDecision
+from sreejita.policy.explanations import low_confidence_suppression
 
 
 class PolicyEngine:
@@ -17,6 +18,7 @@ class PolicyEngine:
 
     def evaluate(self, decision):
         reasons = []
+        explanations = []
         status = "allowed"
 
         # -----------------------------------------
@@ -27,6 +29,11 @@ class PolicyEngine:
             return PolicyDecision(
                 status="blocked",
                 reasons=["Domain explicitly marked as unknown"],
+                explanations=[
+                    "Policy decision: this item was blocked because the domain "
+                    "was explicitly marked as unknown, which is restricted under "
+                    "current governance rules."
+                ],
             )
 
         # -----------------------------------------
@@ -35,6 +42,11 @@ class PolicyEngine:
         if getattr(decision, "status", None) == "insufficient_data":
             status = "allowed_with_warning"
             reasons.append("Insufficient data to confidently classify domain")
+            explanations.append(
+                "Policy decision: this item is allowed with warning because "
+                "available data coverage is insufficient for high-confidence "
+                "classification."
+            )
 
         # -----------------------------------------
         # Rule 2: Ambiguous domain → allow but warn
@@ -42,6 +54,10 @@ class PolicyEngine:
         if getattr(decision, "status", None) == "ambiguous":
             status = "allowed_with_warning"
             reasons.append("Domain classification is ambiguous")
+            explanations.append(
+                "Policy decision: this item is allowed with warning because "
+                "domain signals are directionally consistent but not definitive."
+            )
 
         # -----------------------------------------
         # Rule 3: Low confidence → allow with warning
@@ -54,8 +70,15 @@ class PolicyEngine:
             reasons.append(
                 f"Domain confidence below minimum threshold ({self.min_confidence})"
             )
+            explanations.append(
+                low_confidence_suppression(
+                    confidence=decision.confidence,
+                    threshold=self.min_confidence,
+                )
+            )
 
         return PolicyDecision(
             status=status,
             reasons=reasons,
+            explanations=explanations,
         )
