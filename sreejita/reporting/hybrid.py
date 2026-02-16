@@ -304,7 +304,7 @@ def run(input_path: str, config: Dict[str, Any]) -> Dict[str, Any]:
     run_dir = Path(config.get("run_dir", "./runs"))
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    domain_results = generate_report_payload(input_path, config)
+    domain_results = generate_report_payload(Path(input_path), run_dir, config)
 
     engine = HybridReport()
     md_path = engine.build(
